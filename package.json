@@ -1,0 +1,28 @@
+{
+  "name": "agentmem",
+  "version": "0.1.0",
+  "description": "Cross-tool agent memory + coaching CLI",
+  "type": "module",
+  "author": "Dan Iacono",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dxi106/agent-memory.git"
+  },
+  "homepage": "https://github.com/dxi106/agent-memory#readme",
+  "bin": {
+    "agentmem": "bin/agentmem.mjs",
+    "agentmem-mcp": "bin/agentmem-mcp.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "gray-matter": "^4.0.3"
+  }
+}

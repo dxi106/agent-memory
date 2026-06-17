@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.agentmem.reflect</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Confirm the node path matches `which node` on your machine. -->
+    <string>/usr/local/bin/node</string>
+    <string>/Users/YOUR_USER/Documents/code/agent-memory/bin/agentmem.mjs</string>
+    <string>reflect</string>
+  </array>
+
+  <!-- Nightly at 03:15 local time. Pairs naturally with agentmem ingest run
+       earlier (or relies on hook-captured signals alone). -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- API key is read from the macOS Keychain at runtime via the `security`
+         CLI (service "agentmem", account "anthropic"). No plaintext on disk.
+         See README for setup. Set AGENTMEM_API_KEY here only if you want to
+         bypass the keychain entirely. -->
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/agentmem.reflect.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/agentmem.reflect.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

@@ -1,0 +1,47 @@
+{
+  "reflection": {
+    "lookback_days": 1,
+    "model": "claude-sonnet-4-6",
+    "claude_cli": "claude",
+    "min_signals_to_reflect": 3
+  },
+  "coaching": {
+    "lookback_days": 7,
+    "model": "claude-sonnet-4-6",
+    "max_recommendations_per_run": 8,
+    "min_evidence_per_recommendation": 2
+  },
+  "watch_repos": [
+    "your-user/your-repo",
+    "your-user/another-repo"
+  ],
+  "github": {
+    "lookback_days": 30,
+    "max_prs_per_repo": 50,
+    "max_commits_per_repo": 50,
+    "hot_file_threshold": 5,
+    "hot_file_window_days": 14
+  },
+  "confidence": {
+    "promote_threshold": 0.6,
+    "retire_threshold": 0.2,
+    "evidence_for_step": 0.15,
+    "evidence_against_step": 0.25,
+    "decay_per_30d_idle": 0.1
+  },
+  "sources": {
+    "cowork_sessions_dir": "/Users/<you>/Library/Application Support/Claude/local-agent-mode-sessions",
+    "claude_code_projects_dir": "/Users/<you>/.claude/projects"
+  },
+  "nudge": {
+    "daily_briefing": true,
+    "menu_bar": true,
+    "macos_notifications_on_high_only": true,
+    "mcp_tool_enabled": true
+  },
+  "obsidian": {
+    "enabled": false,
+    "vault_path": "/Users/<you>/Library/Mobile Documents/iCloud~md~obsidian/Documents/<YourVault>",
+    "project_dir": "Projects/agentmem"
+  }
+}

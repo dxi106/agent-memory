@@ -1,0 +1,59 @@
+# Node
+node_modules/
+
+# macOS
+.DS_Store
+
+# Editor backups
+*.swp
+*~
+.#*
+
+# Ephemeral state (not synced across machines)
+.hook-state.json
+.lock
+.logs/
+.notified.json
+ingest-state.json
+
+# Local-only overrides
+config.local.json
+*.pre-sync-backup*
+
+# ----------------------------------------------------------------------------
+# Personal datastore — this repo is the public ENGINE; your live data stays
+# local and untracked. The empty data dirs are kept (via .gitkeep) so a fresh
+# clone has the layout; `agentmem init` also creates them. See examples/ for
+# synthetic samples of what each dir holds.
+# ----------------------------------------------------------------------------
+
+# Per-machine config (copy config.example.json -> config.json and edit)
+config.json
+
+# Generated output (rebuilt from your lessons by the tool)
+AGENTS.md
+INDEX.md
+
+# Live data — keep the dir, ignore its contents
+signals/*
+!signals/.gitkeep
+candidates/*
+!candidates/.gitkeep
+recommendations/*
+!recommendations/.gitkeep
+reflections/*
+!reflections/.gitkeep
+archive/*
+!archive/.gitkeep
+lessons/**
+!lessons/.gitkeep
+!lessons/behavioral/.gitkeep
+!lessons/code/.gitkeep
+!lessons/workflow/.gitkeep
+
+# Local tool permissions
+.claude/
+
+# npm-link symlinks (local install artifacts)
+/bin/agentmem
+/bin/agentmem-mcp
