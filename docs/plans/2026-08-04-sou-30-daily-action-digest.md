@@ -1,7 +1,7 @@
 ---
 ticket: SOU-30
 subsystems: [digest, session-start-adapter, launchd-jobs, candidate-store]
-status: intent
+status: planned
 ---
 
 # SOU-30 — Daily action digest
@@ -280,9 +280,21 @@ Draining a backlog needs the former, so this is sufficient; the plan does not
 claim the latter.
 
 **Additive, forward-only:** new candidates also record a full ISO timestamp
-(`created_at`), so ordering becomes true-FIFO for everything created from here
-on, with no backfill and no change to how the existing 56 sort. Readers prefer
-`created_at` when present and fall back to `(created, id)`.
+(`created_at`), with no backfill and no change to how the existing 56 sort.
+
+The forward key is **`(created_at, id)`, not `created_at` alone** (gate round 2).
+A single `reflect` pass writes several candidates in a loop, so same-millisecond
+`created_at` values are plausible; dropping the `id` tie-break would make the
+order non-total again and hand the decision back to directory enumeration —
+reintroducing exactly the defect this section exists to fix. Readers use
+`(created_at, id)` when `created_at` is present and `(created, id)` as the legacy
+fallback.
+
+**The claim, at its true strength:** ordering is **stable and total** in both
+regimes. It is *additionally* true arrival order for records that carry a
+distinct `created_at`. The plan does not claim strict FIFO under timestamp
+collisions — under a collision the `id` tie-break decides, which is stable but
+arbitrary.
 
 ### Probe 3 — the cap does not drain the backlog
 
@@ -396,15 +408,46 @@ feature whose whole purpose is to defeat silent breakage.
 `process.stdout.write` and before `process.exit(0)`, itself wrapped in
 `try/catch` so it can never break the fail-safe contract:
 
+**Delivery must mean "flushed", not "write() returned"** (gate round 2). Measured
+on this machine, writing to a pipe then calling `process.exit(0)`:
+
+```
+want=20026   got=20026   OK
+want=100026  got=65536   TRUNCATED
+want=500026  got=65536   TRUNCATED
+```
+
+Truncation lands exactly at the 64 KB pipe buffer. With the write callback:
+
+```
+want=100026  got=100026  OK
+want=500026  got=500026  OK
+```
+
+So the stamp must be gated on the **write callback**, and `process.exit(0)`
+deferred until after it:
+
 ```js
 export async function runAdapter(fn, fallback = { continue: true }, onDelivered) {
-  let delivered = false;
-  try { const out = await fn(); process.stdout.write(JSON.stringify(out ?? fallback)); delivered = true; }
-  catch { process.stdout.write(JSON.stringify(fallback)); }
+  let payload, delivered = false;
+  try { payload = JSON.stringify((await fn()) ?? fallback); delivered = true; }
+  catch { payload = JSON.stringify(fallback); }
+  await new Promise((resolve) => process.stdout.write(payload, resolve));
   if (delivered) { try { await onDelivered?.(); } catch {} }
   process.exit(0);
 }
 ```
+
+**Scope of the risk, stated honestly.** The cliff is at 64 KB; today's
+`additionalContext` is 12 lessons plus a tip hint — a few KB — and a 6-item
+digest keeps it there. So this is **not currently reachable**; it is a silent
+cliff being closed because the fix is one line and provably works, not because
+the failure is imminent.
+
+**Pre-existing, and wider than this ticket:** all four adapters already
+`write()`-then-`exit()`, so the lesson injection itself would truncate silently
+past 64 KB. Given `MEMORY.md` grew to 96 files unnoticed, that is a real
+direction of travel. Fixing the shared runtime fixes all four at once.
 
 The parameter is optional, so the other three adapters (`post-tool-use`,
 `user-prompt-submit`, `stop`) are unaffected — but they are in the consumers
@@ -433,6 +476,8 @@ Each names the assertion and today's failure message.
 | R3b | `ordering is stable across shuffled directory enumeration` | same output when readdir order is reversed | stub is enumeration-dependent |
 | R9 | `stamp is NOT written when the adapter body throws` | next session that day still gets the digest | stamp written before emit → day burned |
 | R10 | `onDelivered failure cannot break the fail-safe contract` | adapter still exits 0 with valid JSON | callback throw escapes |
+| R11 | `stamp waits for the stdout write callback` | a >64 KB payload arrives whole at the reader | write-then-exit → truncated at 65536 |
+| R12 | `forward ordering is total under identical created_at` | two records with the same `created_at` sort by id, stably | `created_at`-only comparator → enumeration order |
 | R4 | `session-start injects the digest once per day` | second invocation same day adds no digest part | no digest part exists |
 | R5 | `session-start still returns {continue:true} with no digest` | empty case preserved | — **this already passes: it is a PIN, not a red test** |
 | R6 | `liveness warning fires after 3 days with no successful run` | one warning line | no stamp is read |
@@ -507,6 +552,11 @@ threshold).
 - **Option A — bulk-reject the stale tail.** One digest line: *"reject these 19
   candidates created before 2026-07-20?"* Drains immediately, one decision, and
   is deterministic. 19 of 56 qualify today.
+  **Cost, measured:** `promote` supports `all` (`bin/agentmem.mjs:152`) but
+  `reject` takes a **single id only** (`:187-192`) — there is no bulk branch. So
+  A is either a scripted loop over 19 ids (free, available today) or ~10 lines
+  for `reject --before <date>`. Not a blocker either way, but it is not
+  zero-cost as the option first appears.
 - **Option B — raise the cap to ~10 and scope it to candidates only**, giving
   ledger/MEMORY items their own small allowance. Drains in ~2 weeks; costs more
   morning attention.
@@ -547,3 +597,26 @@ proposing a change.** Each is a property of existing code (a plist's `Weekday`,
 a field's granularity, a runtime's error handling) that the "How this works
 today" section asserted without reading closely enough. That is the step to
 tighten, not the reviewer.
+
+### Round 2 — against `8180c01`
+
+Verdict: **needs-attention**, 1 HIGH + 1 MEDIUM. Both were refinements of round
+1's fixes rather than new territory, and both are now closed.
+
+| # | Finding | Verified how | Resolution |
+| --- | --- | --- | --- |
+| 1 (HIGH) | `onDelivered` still stamps before delivery is durable — `write()` initiation ≠ completion | **Measured, not argued.** Pipe write + `process.exit(0)`: 20 KB arrives whole, 100 KB and 500 KB both truncate at **exactly 65536**. With the write callback, 500 KB arrives whole | Stamp gated on the write callback; `process.exit(0)` deferred behind it. R11 added |
+| 2 (MED) | Forward `created_at` key is not total — one `reflect` pass can collide on the millisecond | Read — `reflect` writes candidates in a loop | Forward key is `(created_at, id)`. Claim narrowed to "stable and total", with strict FIFO claimed only for distinct timestamps. R12 added |
+
+**Residual, recorded rather than chased.** The round-2 HIGH is real but **not
+currently reachable**: it needs >64 KB of `additionalContext`, where today's is a
+few KB and the digest is capped. It was fixed anyway because the fix is one line
+and measured. Its wider value is that it closes the same latent cliff for all
+four adapters, which already `write()`-then-`exit()`.
+
+**Stopping here, at the 2-round cap.** No round 3 was run. Both round-2 findings
+were resolved *after* the verdict was issued, so the last recorded verdict is
+`needs-attention` and there is **no clean PASS on this plan** — the honest state
+is "every finding raised across two rounds is closed, verified by execution,"
+not "the gate blessed it." Round 2 raised no new *class* of defect, only
+sharper edges on round 1's fixes, which is the documented signal to stop.
