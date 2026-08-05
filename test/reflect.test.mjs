@@ -248,3 +248,105 @@ test("buildReflectionRequest places stable context first and adds cache breakpoi
   const last = req.system[req.system.length - 1];
   assert.equal(last.cache_control?.type, "ephemeral");
 });
+
+// --- SOU-31: the reflection pass must not flood the candidate queue ---------
+// Measured 2026-08-05: ~9.7 candidates proposed per nightly run (max 18), from
+// a prompt with no cap. The cap has to hold in CODE, because a prompt
+// instruction is a request, not enforcement.
+
+function nCandidates(n, prefix = "2026-08-05-cand") {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `${prefix}-${i}`,
+    title: `Candidate ${i}`,
+    category: "code",
+    rule: `**Rule:** rule ${i}.`,
+    why: `**Why:** signal ${i}.`,
+    scope: ["*"],
+  }));
+}
+
+test("runReflection writes at most max_candidates_per_run candidates", async () => {
+  const home = await tmpHome();
+  await writeFile(join(home, "config.json"), JSON.stringify({
+    reflection: { lookback_days: 7, min_signals_to_reflect: 1, max_candidates_per_run: 3 },
+  }));
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+
+  const client = fakeClient(async () => jsonContent({ candidates: nCandidates(6), rescore: [] }));
+  const result = await runReflection({ home, client });
+
+  const cands = await listCandidates(home);
+  assert.equal(cands.length, 3, "only the cap may reach disk, whatever the model returns");
+  assert.equal(result.candidates.length, 3, "the reported set must match what was written");
+});
+
+test("runReflection caps at 3 by default when config omits max_candidates_per_run", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+
+  const client = fakeClient(async () => jsonContent({ candidates: nCandidates(6), rescore: [] }));
+  await runReflection({ home, client });
+
+  assert.equal((await listCandidates(home)).length, 3);
+});
+
+test("duplicate ids do not consume cap budget", async () => {
+  const home = await tmpHome();
+  await writeFile(join(home, "config.json"), JSON.stringify({
+    reflection: { lookback_days: 7, min_signals_to_reflect: 1, max_candidates_per_run: 3 },
+  }));
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+
+  // Two candidates already pending; the model re-proposes both before any new one.
+  for (const id of ["existing-0", "existing-1"]) {
+    await writeCandidate(home, {
+      meta: { id, title: id, category: "code", confidence: 0.35, scope: { repos: ["*"] } },
+      body: "**Rule:** seeded.",
+    });
+  }
+  const dupes = nCandidates(2, "existing").map((c, i) => ({ ...c, id: `existing-${i}` }));
+  const client = fakeClient(async () => jsonContent({
+    candidates: [...dupes, ...nCandidates(4)],
+    rescore: [],
+  }));
+
+  await runReflection({ home, client });
+
+  const cands = await listCandidates(home);
+  assert.equal(cands.length, 5, "2 seeded + 3 new — a re-proposed id must not eat the budget");
+  assert.equal(cands.filter((c) => c.meta.id.startsWith("2026-08-05-cand")).length, 3);
+});
+
+test("reflection log's candidates_written equals the files actually created", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+
+  await writeCandidate(home, {
+    meta: { id: "already-here", title: "x", category: "code", confidence: 0.35, scope: { repos: ["*"] } },
+    body: "**Rule:** seeded.",
+  });
+  // One duplicate + one new: exactly one file is created.
+  const client = fakeClient(async () => jsonContent({
+    candidates: [
+      { id: "already-here", title: "dupe", category: "code", rule: "**Rule:** r." },
+      { id: "brand-new", title: "new", category: "code", rule: "**Rule:** r." },
+    ],
+    rescore: [],
+  }));
+
+  await runReflection({ home, client });
+
+  const logs = await readdir(paths(home).reflections);
+  const log = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(log, /- candidates_written: 1$/m, "must count writes, not sanitization survivors");
+});
+
+test("the prompt states the same cap the code enforces", async () => {
+  const home = await tmpHome();
+  const req = await buildReflectionRequest({
+    home,
+    signals: [{ ts: "2026-08-05T10:00:00Z", type: "correction", summary: "no" }],
+    maxCandidates: 3,
+  });
+  assert.match(req.system[0].text, /at most 3/i, "prompt and code must not drift apart");
+});
