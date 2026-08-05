@@ -3,7 +3,8 @@
     "lookback_days": 1,
     "model": "claude-sonnet-4-6",
     "claude_cli": "claude",
-    "min_signals_to_reflect": 3
+    "min_signals_to_reflect": 3,
+    "max_candidates_per_run": 3
   },
   "coaching": {
     "lookback_days": 7,
