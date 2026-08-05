@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.agentmem.ingest</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Apple Silicon homebrew puts node in /opt/homebrew/bin; Intel machines
+         use /usr/local/bin. Confirm against `which node` before installing — a
+         wrong path here fails silently, because launchd reports the spawn
+         error only to StandardErrorPath. -->
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/YOUR_USER/Documents/code/agent-memory/bin/agentmem.mjs</string>
+    <string>ingest</string>
+    <string>--source</string>
+    <string>github</string>
+  </array>
+
+  <!-- Nightly at 03:00 local time, deliberately BEFORE the reflect job at
+       03:15. reflect reads signals with a lookback window that includes the
+       current UTC day, so signals written at 03:00 are visible to the 03:15
+       reflection the same night. Widening this gap is safe; closing it is not
+       — running the two together races the signal write against the read. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- GitHub auth is resolved by the `gh` CLI itself (macOS keyring, or
+         GITHUB_TOKEN / GH_TOKEN if set). No token is stored here. `gh` must be
+         on PATH below — homebrew installs it to /opt/homebrew/bin/gh. -->
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/agentmem.ingest.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/agentmem.ingest.err.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
