@@ -113,6 +113,16 @@ Run `agentmem help` for the full list. Highlights:
 - `agentmem coach show <id|all>` / `accept <id|all>` / `dismiss <id>` /
   `snooze <id> <days>` — manage recommendations. `dismiss` is sticky.
 - `agentmem coach weekly` — write a digest to `recommendations/weekly/YYYY-WW.md`.
+- `agentmem digest [--cap N]` — build today's action digest into
+  `digest/YYYY-MM-DD.md`: the oldest pending candidates, capped (default 6),
+  plus a warning if no reflection has run in 3 days. Writes **nothing** when
+  there is nothing to do, so an untouched day leaves no file. Fully offline —
+  no model call, which is what lets the SessionStart hook read it.
+
+  Ordering is `(created_at, id)`, falling back to `(created, id)` for
+  candidates written before the timestamp existed. Oldest-first is the only
+  order available: every candidate carries an identical `confidence` of 0.35
+  and nothing varies it, so there is no ranking signal to sort by.
 
 ## API key
 

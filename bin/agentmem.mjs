@@ -29,6 +29,7 @@ import {
   defaultClient as coachDefaultClient,
 } from "../lib/coach.mjs";
 import { syncToObsidian } from "../lib/obsidian.mjs";
+import { runDigest } from "../lib/digest.mjs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -49,6 +50,7 @@ const COMMANDS = {
   reflect,
   ingest,
   coach,
+  digest,
   obsidian,
   help: usage,
 };
@@ -93,6 +95,9 @@ Commands:
   coach dismiss <id>        Dismiss a recommendation (sticky — never resurfaces)
   coach snooze <id> <days>  Snooze a recommendation for N days
   coach weekly              Write a weekly digest of recommendations
+  digest [--cap N]          Build today's action digest — oldest candidates
+                            first, capped. Writes nothing when there is
+                            nothing to do. Offline: no model call.
   obsidian sync             Sync pending tips + candidates + counts to the Obsidian vault
 
 Store: ${home}`);
@@ -356,6 +361,30 @@ async function obsidian(rest) {
   }
   console.log(`pending: ${result.pendingPath}`);
   if (result.digestPath) console.log(`digest:  ${result.digestPath}`);
+}
+
+async function digest(rest) {
+  const capFlag = rest.indexOf("--cap");
+  const opts = {};
+  if (capFlag !== -1) {
+    const n = Number(rest[capFlag + 1]);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(`usage: agentmem digest [--cap N]  (N must be a non-negative integer)`);
+    }
+    opts.cap = n;
+  }
+
+  const result = await runDigest(home, opts);
+
+  if (!result.file) {
+    console.log("digest: nothing to do — no file written");
+    return;
+  }
+  if (result.warning) console.log(`digest: ${result.warning}`);
+  for (const c of result.items) {
+    console.log(`  ${c.meta.id} — ${c.meta.title}`);
+  }
+  console.log(`digest: ${result.file}`);
 }
 
 function ageDays(isoDate) {

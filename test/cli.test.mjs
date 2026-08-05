@@ -598,3 +598,42 @@ test("reindex rebuilds INDEX.md to reflect active lessons", async () => {
   const index = await readFile(join(home, "INDEX.md"), "utf8");
   assert.match(index, /Indexable rule/);
 });
+
+// --- SOU-30: the digest command --------------------------------------------
+
+test("digest on a fresh store writes nothing and says so", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  const { stdout } = await run(home, "digest");
+  assert.match(stdout, /nothing to do/i);
+});
+
+test("digest lists pending candidates and writes the dated file", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  await writeCandidate(home, {
+    meta: {
+      id: "2026-08-01-use-the-grep-tool",
+      title: "Use the Grep tool",
+      category: "workflow",
+      confidence: 0.35,
+      created: "2026-08-01",
+      source: "reflection",
+      scope: { repos: ["callelo"] },
+    },
+    body: "**Rule:** use it.",
+  });
+
+  const { stdout } = await run(home, "digest");
+  assert.match(stdout, /2026-08-01-use-the-grep-tool/);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const written = await readFile(join(home, "digest", `${today}.md`), "utf8");
+  assert.match(written, /Use the Grep tool/);
+});
+
+test("digest appears in the usage text", async () => {
+  const home = await tmpHome();
+  const { stdout } = await run(home, "help");
+  assert.match(stdout, /^\s+digest\b/m);
+});

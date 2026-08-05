@@ -45,6 +45,12 @@ test("ensureLayout creates the expected subdirectories", async () => {
   assert.ok(await isDir(p.candidates));
   assert.ok(await isDir(p.signals));
   assert.ok(await isDir(p.archive));
+  assert.ok(await isDir(p.reflections));
+  assert.ok(await isDir(p.knowledge));
+  // SOU-30. paths() and ensureLayout() must move together — `recommendations/`
+  // is gitignored but missing from paths(), and coach.mjs has to compute it
+  // independently as a result. Don't repeat that.
+  assert.ok(await isDir(p.digest), "a fresh clone must get digest/");
 });
 
 test("listLessons returns empty array for a fresh store", async () => {
