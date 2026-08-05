@@ -552,20 +552,32 @@ not in place.
 > | **B** — raise/split the cap | **Deferred → SOU-32.** Revisit only after C has run ~2 weeks and the arrival rate is re-measured. Raising the cap while the source still emits ~10/night just moves the backlog into the mornings |
 > | **C** — fix the source | **Built → SOU-31**, branch `feat/sou-31-cap-reflection-candidates`, commit `c92cc5f`, 272/272 |
 >
-> **The fork's own premise was understated.** It assumed ~4.25 candidates/day.
-> That was the *net* rate after promote/reject consumed some. Measuring
-> `candidates_proposed` across `reflections/*.md` gives the **gross** rate:
+> **The fork's premise was understated — and the first correction was wrong.**
+> The fork assumed ~4.25 candidates/day, the *net* rate after promote/reject
+> consumed some. A first re-measurement claimed **9.7/run, max 18** and was used
+> to defer B and justify C.
+>
+> **That figure does not survive re-reading the logs.** Re-derived from
+> `candidates_proposed` across all 46 `reflections/*.md` on 2026-08-05, the 16
+> nightly runs 07-20..08-05 are:
 >
 > ```
-> 07-20  6   07-24 10   07-28 10   08-01 14
-> 07-21  5   07-25 14   07-29 10   08-03 15
-> 07-22  5   07-26 14   07-30  5   08-04  8
-> 07-23  7   07-27  4   07-31 18   08-05 10
+> 07-20  3   07-24  5   07-28  4   08-01  7
+> 07-21  2   07-25  8   07-29  5   08-03 11
+> 07-22  2   07-26  7   07-30  2   08-04  4
+> 07-23  3   07-27  1   07-31  9   08-05  4
 > ```
 >
-> **Mean 9.7/run, max 18** — more than double the figure the fork was framed
-> around. On 08-03, 10 signals produced 15 candidates. This strengthens the case
-> for C and weakens B further: the queue was never a triage-throughput problem.
+> **Mean 4.81/run, max 11.** The discarded table totalled 155 against the logs'
+> 77 — almost exactly double, consistent with a grep matching both
+> `candidates_proposed:` and `candidates_written:`, which are identical on every
+> pre-SOU-31 row.
+>
+> **What this changes.** C is still right — at a real 4.81 gross a cap of 3
+> binds without being brutal — and it is merged. But B's deferral rested on the
+> bad number: at 4.81 the producer rate exceeds the queue-derived 4.25 by ~13%,
+> not 2x, so "tune the cap" is back on the table and **SOU-32 should be
+> re-argued on the corrected figures, not inherited from this paragraph.**
 >
 > **What SOU-31 changed:** `reflection.max_candidates_per_run` (default 3),
 > enforced at the write chokepoint in `runReflection` — the prompt states the
@@ -574,8 +586,9 @@ not in place.
 > longer consume cap budget, which incidentally corrects `candidates_written`
 > in the reflection log (it counted sanitization survivors, not writes).
 >
-> **Not yet live.** The npm-linked tool runs from `main`; the cap takes effect on
-> the nightly 03:15 `reflect` only once SOU-31 is merged.
+> **Live as of 2026-08-05.** SOU-31 merged to `main` as `402a979` (272/272 on the
+> merged tree) and the npm-linked tool runs from `main`, so the cap is in force
+> for the nightly 03:15 `reflect`.
 >
 > **Probe 2's finding was also understated** and is now **SOU-33**: candidate
 > confidence is not merely unreachable, it is unconsumed —
