@@ -541,7 +541,50 @@ not in place.
 
 ---
 
-## Open fork for Dan
+## Fork — RESOLVED by Dan, 2026-08-05: **A + C**, B deferred
+
+> **Resolution.** Dan chose **A + C** on 2026-08-05 and deferred **B**. All three
+> are now closed out; the fork no longer blocks the build.
+>
+> | | Outcome |
+> | --- | --- |
+> | **A** — bulk-reject the stale tail | **Done.** 19 candidates created before 2026-07-20 rejected via a scripted loop. Pending **60 → 41**. `reject` is an `unlink` and `candidates/` is gitignored, so all 19 were copied to `archive/rejected-2026-08-05/` first — that backup is the only way back |
+> | **B** — raise/split the cap | **Deferred → SOU-32.** Revisit only after C has run ~2 weeks and the arrival rate is re-measured. Raising the cap while the source still emits ~10/night just moves the backlog into the mornings |
+> | **C** — fix the source | **Built → SOU-31**, branch `feat/sou-31-cap-reflection-candidates`, commit `c92cc5f`, 272/272 |
+>
+> **The fork's own premise was understated.** It assumed ~4.25 candidates/day.
+> That was the *net* rate after promote/reject consumed some. Measuring
+> `candidates_proposed` across `reflections/*.md` gives the **gross** rate:
+>
+> ```
+> 07-20  6   07-24 10   07-28 10   08-01 14
+> 07-21  5   07-25 14   07-29 10   08-03 15
+> 07-22  5   07-26 14   07-30  5   08-04  8
+> 07-23  7   07-27  4   07-31 18   08-05 10
+> ```
+>
+> **Mean 9.7/run, max 18** — more than double the figure the fork was framed
+> around. On 08-03, 10 signals produced 15 candidates. This strengthens the case
+> for C and weakens B further: the queue was never a triage-throughput problem.
+>
+> **What SOU-31 changed:** `reflection.max_candidates_per_run` (default 3),
+> enforced at the write chokepoint in `runReflection` — the prompt states the
+> same number, but the loop is what makes it true. The prompt bar also rises
+> from "at least one concrete signal" to requiring a pattern. Duplicate ids no
+> longer consume cap budget, which incidentally corrects `candidates_written`
+> in the reflection log (it counted sanitization survivors, not writes).
+>
+> **Not yet live.** The npm-linked tool runs from `main`; the cap takes effect on
+> the nightly 03:15 `reflect` only once SOU-31 is merged.
+>
+> **Probe 2's finding was also understated** and is now **SOU-33**: candidate
+> confidence is not merely unreachable, it is unconsumed —
+> `promote_threshold`, `retire_threshold` and `decay_per_30d_idle` are
+> declared in `config.json` and **read nowhere in the codebase**.
+> `promoteCandidate` performs no confidence check at all. The config described
+> behaviour that does not exist, and this plan reasoned from it.
+
+### The fork as originally posed
 
 **The 6/day cap does not drain the backlog.** Measured: 56 pending, ~4.25/day
 arriving, cap shared across three item types. Best case 32 days; realistically
@@ -569,7 +612,20 @@ morning; C stops it refilling. B alone spends more of the attention this ticket
 is trying to protect.
 
 **Not fixed here:** candidate confidence being inert (Probe 2) is a real
-pre-existing defect and deserves its own SOU ticket.
+pre-existing defect and deserves its own SOU ticket. → filed as **SOU-33**.
+
+### What the fork's framing got wrong
+
+Worth recording, because the error is the one this repo keeps making. The fork
+presented the drain problem as a **rate mismatch** — 6/day out versus ~4.25/day
+in — which frames it as close, and makes B (raise the cap) look like a
+reasonable answer. Both numbers were downstream measurements of a queue, not of
+the thing filling it. Measuring the **producer** instead gave 9.7/run and
+reframed the whole fork: the queue was never close to draining, and no cap
+setting would have fixed it.
+
+*Probe the layer the claim needs.* The claim was about supply; the measurement
+was of inventory.
 
 ---
 
