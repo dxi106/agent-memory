@@ -270,7 +270,25 @@ test("R2 (end to end): runDigest respects the cap", async () => {
 
   assert.equal(result.items.length, 4);
   const text = await readFile(result.file, "utf8");
-  assert.equal(text.match(/^- /gm).length, 4, "the rendered file must also be capped");
+  assert.equal(text.match(/^\d+\. /gm).length, 4, "the rendered file must also be capped");
+});
+
+// Goal 3 is approving in conversation — "promote 1, 3 and 5". The file tells
+// you to reply with numbers, so the items have to carry them. Caught by
+// reading the artifact a real run produced, not by a test.
+test("rendered items are numbered from 1, matching the reply instruction", async () => {
+  const home = await tmpHome();
+  const today = "2026-08-05";
+  await writeFile(join(paths(home).reflections, `${today}-07-15-00.md`), "# r\n");
+  await writeCandidate(home, candidate("2026-08-01-alpha"));
+  await writeCandidate(home, candidate("2026-08-02-bravo"));
+
+  const { file } = await runDigest(home, { today });
+  const text = await readFile(file, "utf8");
+
+  assert.match(text, /^1\. `2026-08-01-alpha`/m);
+  assert.match(text, /^2\. `2026-08-02-bravo`/m);
+  assert.match(text, /Reply with the numbers/);
 });
 
 test("the default threshold is the documented 3 days", () => {
