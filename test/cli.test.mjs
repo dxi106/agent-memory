@@ -637,3 +637,44 @@ test("digest appears in the usage text", async () => {
   const { stdout } = await run(home, "help");
   assert.match(stdout, /^\s+digest\b/m);
 });
+
+// `--cap ""` used to coerce to 0 via Number(""), so a wrapper invoking
+// `agentmem digest --cap "$UNSET_VAR"` reported "nothing to do" and exited 0
+// with a full backlog — silent death in the feature built to defeat silent death.
+test("digest --cap rejects values that are not non-negative integers", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+
+  for (const bad of ["", " ", "abc", "-1", "3.5", "Infinity", "1e3"]) {
+    await assert.rejects(
+      () => run(home, "digest", "--cap", bad),
+      (e) => /non-negative integer/.test(e.stderr ?? ""),
+      `--cap ${JSON.stringify(bad)} should have been rejected`,
+    );
+  }
+  await assert.rejects(() => run(home, "digest", "--cap"), /./);
+});
+
+test("digest --cap limits how many candidates are listed", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  for (const d of ["01", "02", "03"]) {
+    await writeCandidate(home, {
+      meta: {
+        id: `2026-08-${d}-item`,
+        title: `Item ${d}`,
+        category: "workflow",
+        confidence: 0.35,
+        created: `2026-08-${d}`,
+        source: "reflection",
+        scope: { repos: ["callelo"] },
+      },
+      body: "**Rule:** x.",
+    });
+  }
+
+  const { stdout } = await run(home, "digest", "--cap", "2");
+  assert.match(stdout, /2026-08-01-item/);
+  assert.match(stdout, /2026-08-02-item/);
+  assert.doesNotMatch(stdout, /2026-08-03-item/);
+});

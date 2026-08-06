@@ -73,10 +73,17 @@ test("ingest runs strictly before reflect, so a night's signals reach that night
   );
 });
 
-test("the ingest template does not point at the Intel-only node path", async () => {
-  const plist = await readTemplate("ingest");
-  assert.ok(
-    !plist.includes("<string>/usr/local/bin/node</string>"),
-    "/usr/local/bin/node does not exist on Apple Silicon and launchd fails silently",
-  );
-});
+// Scoped to `ingest` alone, this guard could never fire: ingest was authored
+// with the right path, while reflect and coach — the two that actually carried
+// the defect — went unchecked. reflect is the job whose silence
+// livenessWarning() exists to report, so shipping the alarm and leaving its
+// fuse in was the wrong half of the pair.
+for (const name of ["ingest", "reflect", "coach"]) {
+  test(`the ${name} template does not point at the Intel-only node path`, async () => {
+    const plist = await readTemplate(name);
+    assert.ok(
+      !plist.includes("<string>/usr/local/bin/node</string>"),
+      "/usr/local/bin/node does not exist on Apple Silicon and launchd fails silently",
+    );
+  });
+}

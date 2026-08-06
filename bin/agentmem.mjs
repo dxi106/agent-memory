@@ -367,11 +367,15 @@ async function digest(rest) {
   const capFlag = rest.indexOf("--cap");
   const opts = {};
   if (capFlag !== -1) {
-    const n = Number(rest[capFlag + 1]);
-    if (!Number.isInteger(n) || n < 0) {
+    // Validate the raw token, not Number(raw): Number("") and Number(" ") are
+    // both 0, so `--cap "$UNSET_VAR"` used to coerce to a cap of zero and
+    // report "nothing to do" over a full backlog, exit 0. Silent death in the
+    // one feature built to make silence impossible.
+    const raw = rest[capFlag + 1];
+    if (typeof raw !== "string" || !/^\d+$/.test(raw)) {
       throw new Error(`usage: agentmem digest [--cap N]  (N must be a non-negative integer)`);
     }
-    opts.cap = n;
+    opts.cap = Number(raw);
   }
 
   const result = await runDigest(home, opts);
