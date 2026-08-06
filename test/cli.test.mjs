@@ -761,3 +761,38 @@ test("--no-ledger is documented in the usage text", async () => {
   const { stdout } = await run(await tmpHome(), "help");
   assert.match(stdout, /--no-ledger/);
 });
+
+// The CLI summary had two of render()'s three ledger states. The third —
+// "scan incomplete, but nothing missing in what I did see" — printed NOTHING,
+// so `agentmem digest` reported a bare path with no reason a file was written.
+// Reproduced end-to-end before fixing: a fake `gh` on PATH drives the real
+// resolveProductionFetcher -> ghCliFetch path with no network.
+test("digest CLI reports an incomplete sweep instead of printing nothing", async () => {
+  const home = await tmpHome();
+  await execFileAsync(process.execPath, [BIN, "init"], {
+    env: { ...process.env, AGENTMEM_HOME: home },
+  });
+  await writeFile(join(home, "reflections", "2026-08-06-07-15-00.md"), "# r\n");
+
+  const bin = await mkdtemp(join(tmpdir(), "agentmem-fakegh-"));
+  const ledger = "# Review findings ledger\n\n| #600 | Code | x | y |\n";
+  await writeFile(
+    join(bin, "gh"),
+    `#!/usr/bin/env bash\n` +
+      `if [ "$1" = "auth" ]; then exit 0; fi\n` +
+      `case "$2" in\n` +
+      `  */contents/*) printf '{"encoding":"base64","content":"%s"}\\n' ` +
+      `"${Buffer.from(ledger, "utf8").toString("base64")}" ;;\n` +
+      `  */pulls*) echo '[{"number":600,"title":"CAL-1: cited feature PR",` +
+      `"merged_at":"2026-08-01T00:00:00Z"}]' ;;\n` +
+      `esac\nexit 0\n`,
+    { mode: 0o755 },
+  );
+
+  const { stdout } = await execFileAsync(process.execPath, [BIN, "digest"], {
+    env: { ...process.env, AGENTMEM_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  assert.match(stdout, /600/, "name where the sweep stopped");
+  assert.match(stdout, /not checked|incomplete|stopped/i);
+});

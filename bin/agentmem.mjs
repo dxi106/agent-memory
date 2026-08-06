@@ -407,6 +407,13 @@ async function digest(rest) {
     for (const pr of led.missing) {
       console.log(`  ${led.repo} #${pr.number} — ${flattenField(pr.title)}`);
     }
+  } else if (led && !led.complete) {
+    // render() has always had this third state; the CLI summary had only two,
+    // so an incomplete sweep printed a bare path with no reason a file existed.
+    // Silence here is the false clean this whole check exists to prevent.
+    console.log(
+      `digest: close-out sweep stopped at #${led.oldestSeen}; anything older was not checked`,
+    );
   }
   console.log(`digest: ${result.file}`);
 }

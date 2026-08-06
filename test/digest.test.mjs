@@ -756,3 +756,34 @@ test("a failed ledger check does not suppress the candidates the digest already 
   assert.match(text, /2026-08-02-b/, "the offline half of the digest still works");
   assert.match(text, /network down/);
 });
+
+// Found by reproducing a code-review finding end-to-end with a fake `gh`.
+// The reachable state is: the merged page stops above the window floor AND
+// every feature PR it saw is already cited — so missing is empty, complete is
+// false. The section then rendered `(0)`, which reads as an all-clear, directly
+// above a line saying nothing was checked. A count of zero is only meaningful
+// when a full sweep produced it.
+test("a zero-count heading is not printed when nothing was actually swept", async () => {
+  const home = await tmpHome();
+  await writeFile(join(paths(home).reflections, "2026-08-06-07-15-00.md"), "# r\n");
+
+  const r = await runDigest(home, {
+    today: "2026-08-06",
+    ledger: { repo: "o/r", complete: false, oldestSeen: 600, missing: [] },
+  });
+  const text = await readFile(r.file, "utf8");
+
+  assert.doesNotMatch(text, /close-out \(0\)/, "a (0) count reads as 'all clear'");
+  assert.match(text, /600/, "and it still says where the sweep stopped");
+});
+
+test("a real zero — a complete sweep with nothing missing — writes no section at all", async () => {
+  const home = await tmpHome();
+  await writeFile(join(paths(home).reflections, "2026-08-06-07-15-00.md"), "# r\n");
+
+  const r = await runDigest(home, {
+    today: "2026-08-06",
+    ledger: { repo: "o/r", complete: true, oldestSeen: 1, missing: [] },
+  });
+  assert.equal(r.file, null);
+});
