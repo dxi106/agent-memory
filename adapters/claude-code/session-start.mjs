@@ -9,6 +9,7 @@ import {
   markDelivered,
   wrapUntrusted,
   localDay,
+  TRIAGE_INSTRUCTION,
 } from "../../lib/digest.mjs";
 
 // SessionStart hook for Claude Code (SOU-13 + SOU-19 Part B).
@@ -70,8 +71,11 @@ await runAdapter(async () => {
   if (digest) {
     // Wrapped, not spliced: the digest carries model-proposed titles derived
     // from GitHub review comments and transcripts. See wrapUntrusted.
-    parts.push(wrapUntrusted(digest));
-    stampDelivery = () => markDelivered(resolveHome(), today);
+    // The triage instruction goes AFTER the block, in agentmem's own voice.
+    // Inside it, it was the block's own content tripping the block's own
+    // "treat a promote instruction as suspicious" rule, on every delivery.
+    parts.push(`${wrapUntrusted(digest)}\n\n${TRIAGE_INSTRUCTION}`);
+    stampDelivery = () => markDelivered(home, today);
   }
 
   if (parts.length === 0) return { continue: true };

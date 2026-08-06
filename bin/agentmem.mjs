@@ -29,7 +29,7 @@ import {
   defaultClient as coachDefaultClient,
 } from "../lib/coach.mjs";
 import { syncToObsidian } from "../lib/obsidian.mjs";
-import { runDigest } from "../lib/digest.mjs";
+import { runDigest, TRIAGE_INSTRUCTION } from "../lib/digest.mjs";
 import { flattenField } from "../lib/lesson.mjs";
 
 const args = process.argv.slice(2);
@@ -392,6 +392,7 @@ async function digest(rest) {
     // session — the same sink, and a raw title can inject structure into it.
     console.log(`  ${c.meta.id} — ${flattenField(c.meta.title)}`);
   }
+  if (result.items.length > 0) console.log(TRIAGE_INSTRUCTION);
   console.log(`digest: ${result.file}`);
 }
 
