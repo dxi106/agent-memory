@@ -151,3 +151,108 @@ test("PIN: omitting onDelivered entirely is fine — the other three adapters do
   assert.deepEqual(JSON.parse(stdout), { continue: true, n: 3 });
   assert.equal(code, 0);
 });
+
+// ---------------------------------------------------------------------------
+// The flush guard must not become a WORSE failure than the one it replaced.
+//
+// Awaiting the write callback holds the process open, which reintroduced two
+// problems the old synchronous exit could not have: an unhandled 'error' event
+// on stdout, and an indefinite wait when nothing drains the pipe. A SessionStart
+// hook that hangs is worse than one that truncates.
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn an adapter and control what happens to its stdout. The three modes are
+ * genuinely different failures and must not be conflated:
+ *   "drain"   — a normal reader
+ *   "stall"   — pipe open, never read: the buffer fills and write() never
+ *               completes. This is the HANG case.
+ *   "destroy" — reader goes away: stdout emits 'error'. This is the EPIPE case.
+ */
+async function spawnAdapter(bodySource, { mode }) {
+  const dir = await mkdtemp(join(tmpdir(), "agentmem-pipe-"));
+  const script = join(dir, "adapter.mjs");
+  await writeFile(
+    script,
+    `import { runAdapter } from ${JSON.stringify(RUNTIME)};\n` +
+      `const STAMP = ${JSON.stringify(join(dir, "stamp.txt"))};\n` +
+      bodySource,
+  );
+
+  const { spawn } = await import("node:child_process");
+  const started = Date.now();
+  return await new Promise((resolve) => {
+    const child = spawn("node", [script], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    if (mode === "drain") child.stdout.resume();
+    else if (mode === "destroy") child.stdout.destroy();
+    // "stall": deliberately neither read nor closed.
+
+    const kill = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve({ hung: true, ms: Date.now() - started, stderr, dir });
+    }, 15000);
+
+    child.on("exit", (code) => {
+      clearTimeout(kill);
+      resolve({ hung: false, code, ms: Date.now() - started, stderr, dir });
+    });
+  });
+}
+
+test("a payload nobody drains does not hang the host session", async () => {
+  const r = await spawnAdapter(
+    `await runAdapter(async () => ({ continue: true, blob: "x".repeat(500000) }));`,
+    { mode: "stall" },
+  );
+  assert.equal(r.hung, false, `adapter never terminated (${r.ms}ms) — a hung SessionStart hook blocks the session`);
+  assert.equal(r.code, 0, "the fail-safe contract requires exit 0");
+});
+
+test("a reader that goes away does not produce a crash or a stack trace", async () => {
+  const r = await spawnAdapter(
+    `await runAdapter(async () => ({ continue: true, blob: "x".repeat(3000) }));`,
+    { mode: "destroy" },
+  );
+  assert.equal(r.code, 0, `exited ${r.code}: ${r.stderr.split("\n")[0]}`);
+  assert.doesNotMatch(r.stderr, /EPIPE|node:events|at runAdapter/, "no unhandled error may reach stderr");
+});
+
+test("the stamp does not fire when the payload never reached the reader", async () => {
+  // Otherwise the day is marked delivered on a write the user never received —
+  // R9's failure, relocated from the body layer to the write layer.
+  // Must exceed the 64 KB pipe buffer: a small payload lands in the buffer even
+  // when nobody reads it, so its write callback legitimately fires and the
+  // stamp is correct. Only a payload that cannot fit exercises a failed flush.
+  const { readFile: rf } = await import("node:fs/promises");
+  const r = await spawnAdapter(
+    `import { writeFileSync } from "node:fs";\n` +
+      `await runAdapter(\n` +
+      `  async () => ({ continue: true, blob: "x".repeat(500000) }),\n` +
+      `  { continue: true },\n` +
+      `  () => writeFileSync(STAMP, "delivered"),\n` +
+      `);`,
+    { mode: "stall" },
+  );
+  assert.equal(r.code, 0);
+  let stamp = null;
+  try {
+    stamp = await rf(join(r.dir, "stamp.txt"), "utf8");
+  } catch {}
+  assert.equal(stamp, null, "a failed write must not burn the day");
+});
+
+test("PIN: a drained large payload still flushes whole and stamps", async () => {
+  const r = await spawnAdapter(
+    `import { writeFileSync } from "node:fs";\n` +
+      `await runAdapter(\n` +
+      `  async () => ({ continue: true, blob: "x".repeat(200000) }),\n` +
+      `  { continue: true },\n` +
+      `  () => writeFileSync(STAMP, "delivered"),\n` +
+      `);`,
+    { mode: "drain" },
+  );
+  assert.equal(r.hung, false);
+  assert.equal(r.code, 0);
+});

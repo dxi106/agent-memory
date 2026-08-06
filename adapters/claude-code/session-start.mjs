@@ -8,6 +8,7 @@ import {
   readDeliveredDate,
   markDelivered,
   wrapUntrusted,
+  localDay,
 } from "../../lib/digest.mjs";
 
 // SessionStart hook for Claude Code (SOU-13 + SOU-19 Part B).
@@ -52,7 +53,7 @@ await runAdapter(async () => {
   const lessons = await selectForInjection(home, cwd, 12);
   const pending = await getPendingRecommendations(home, cwd);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
   const digest =
     (await readDeliveredDate(home)) === today ? null : await readDigestFile(home, today);
 

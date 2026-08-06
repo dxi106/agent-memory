@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ensureLayout, paths, writeCandidate, promoteCandidate } from "../lib/storage.mjs";
 import {
   orderCandidates,
@@ -11,6 +12,9 @@ import {
   runDigest,
   lastReflectionDate,
   LIVENESS_THRESHOLD_DAYS,
+  localDay,
+  markDelivered,
+  readDeliveredDate,
 } from "../lib/digest.mjs";
 import { flattenField } from "../lib/lesson.mjs";
 
@@ -499,4 +503,85 @@ test("truncation does not split a surrogate pair", async () => {
   const out = flattenField(long);
   assert.ok(out.isWellFormed(), "flattenField emitted a lone surrogate");
   assert.doesNotMatch(out, /�/);
+});
+
+// ---------------------------------------------------------------------------
+// The day boundary must be the user's midnight, not UTC's.
+//
+// toISOString() rolls at 20:00 EDT. An evening session is the first session of
+// the NEXT UTC day: it delivers and stamps that day. The next morning's rebuild
+// writes the same filename, already stamped, and the digest vanishes for the
+// whole workday — silently.
+// ---------------------------------------------------------------------------
+test("localDay returns the local calendar day, not the UTC one", async () => {
+  // Run in a child so TZ is fixed regardless of where the suite runs.
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const mod = new URL("../lib/digest.mjs", import.meta.url).href;
+
+  const { stdout } = await run(
+    "node",
+    [
+      "-e",
+      `import(${JSON.stringify(mod)}).then(({ localDay }) => {
+         const evening = new Date("2026-08-06T23:30:00-04:00");
+         console.log(JSON.stringify({
+           utc: evening.toISOString().slice(0, 10),
+           local: localDay(evening),
+         }));
+       });`,
+    ],
+    { env: { ...process.env, TZ: "America/New_York" } },
+  );
+
+  const { utc, local } = JSON.parse(stdout);
+  assert.equal(utc, "2026-08-07", "precondition: 23:30 EDT is already the next UTC day");
+  assert.equal(local, "2026-08-06", "the digest day must follow the user's calendar");
+});
+
+// Deterministic whenever the suite runs: at any instant at least one of UTC+14
+// and UTC-11 has a different calendar date from UTC, so a caller still using
+// toISOString() fails in at least one of the two. Asserting against the current
+// clock alone passes vacuously for most of the day — it did, which is why this
+// version exists.
+test("runDigest and markDelivered follow the local day in every timezone", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const probe = fileURLToPath(new URL("./fixtures/tz-probe.mjs", import.meta.url));
+
+  let sawDivergence = false;
+
+  for (const tz of ["Pacific/Kiritimati", "Pacific/Midway"]) {
+    const { stdout } = await run("node", [probe], { env: { ...process.env, TZ: tz } });
+    const r = JSON.parse(stdout);
+    if (r.local !== r.utc) sawDivergence = true;
+
+    assert.ok(
+      r.file.endsWith(`${r.local}.md`),
+      `[${tz}] digest wrote ${r.file}, but the local day is ${r.local} (UTC ${r.utc})`,
+    );
+    assert.equal(r.stamp, r.local, `[${tz}] the stamp followed UTC instead of the local day`);
+  }
+
+  assert.ok(sawDivergence, "neither timezone diverged from UTC — this test proved nothing");
+});
+
+test("a day's delivery does not suppress the next day's digest", async () => {
+  // The regression in full: deliver on day D, rebuild on D+1, and D+1 must be
+  // its own unstamped file rather than an overwrite of an already-delivered one.
+  const home = await tmpHome();
+  await writeFile(join(paths(home).reflections, "2026-08-06-07-15-00.md"), "# r\n");
+  await writeCandidate(home, candidate("2026-08-01-evening"));
+
+  const dayOne = await runDigest(home, { today: "2026-08-06" });
+  await markDelivered(home, "2026-08-06");
+
+  await writeCandidate(home, candidate("2026-08-02-overnight"));
+  const dayTwo = await runDigest(home, { today: "2026-08-07" });
+
+  assert.notEqual(dayOne.file, dayTwo.file, "each day needs its own file");
+  assert.equal(await readDeliveredDate(home), "2026-08-06", "yesterday's stamp must not claim today");
+  assert.match(await readFile(dayTwo.file, "utf8"), /overnight/);
 });
