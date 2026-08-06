@@ -30,6 +30,7 @@ import {
 } from "../lib/coach.mjs";
 import { syncToObsidian } from "../lib/obsidian.mjs";
 import { runDigest } from "../lib/digest.mjs";
+import { flattenField } from "../lib/lesson.mjs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -386,7 +387,10 @@ async function digest(rest) {
   }
   if (result.warning) console.log(`digest: ${result.warning}`);
   for (const c of result.items) {
-    console.log(`  ${c.meta.id} — ${c.meta.title}`);
+    // Flattened for the same reason render() flattens: this stdout is read by a
+    // terminal, a launchd log, or an agent that ran `agentmem digest` inside a
+    // session — the same sink, and a raw title can inject structure into it.
+    console.log(`  ${c.meta.id} — ${flattenField(c.meta.title)}`);
   }
   console.log(`digest: ${result.file}`);
 }

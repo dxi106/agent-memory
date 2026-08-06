@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureLayout, paths, writeCandidate } from "../lib/storage.mjs";
+import { ensureLayout, paths, writeCandidate, promoteCandidate } from "../lib/storage.mjs";
 import {
   orderCandidates,
   selectDigestItems,
@@ -12,6 +12,7 @@ import {
   lastReflectionDate,
   LIVENESS_THRESHOLD_DAYS,
 } from "../lib/digest.mjs";
+import { flattenField } from "../lib/lesson.mjs";
 
 async function tmpHome() {
   const home = await mkdtemp(join(tmpdir(), "agentmem-digest-"));
@@ -374,8 +375,63 @@ test("a backtick in an id cannot break out of its code span", async () => {
   const { file } = await runDigest(home, { today });
   const text = await readFile(file, "utf8");
 
-  assert.equal((text.match(/`/g) || []).length % 2, 0, "unbalanced code-span backticks");
+  // Assert on the id's OWN span, not a whole-document backtick count: only the
+  // id is stripped to SAFE_ID's alphabet, so a document-wide balance check
+  // would be claiming an invariant that title and category do not uphold.
+  const [, rendered] = text.match(/^1\. `([^`]*)`/m) ?? [];
+  assert.ok(rendered !== undefined, "the item must still render a closed code span");
+  assert.match(rendered, /^[A-Za-z0-9_-]*$/, "a rendered id must be SAFE_ID's alphabet only");
   assert.equal(text.match(/^## /gm).length, 1, "an id must not inject a heading");
+});
+
+test("a rendered id round-trips to `agentmem promote <id>`", async () => {
+  // The id is what the reader types back. Truncating it would resolve to
+  // nothing — or, worse, to a different record that shares the prefix.
+  const home = await tmpHome();
+  const today = "2026-08-05";
+  await writeFile(join(paths(home).reflections, `${today}-07-15-00.md`), "# r\n");
+  const longId = `2026-08-01-${"a".repeat(140)}`;
+  await writeCandidate(home, candidate(longId, { created: "2026-08-01" }));
+
+  const { file } = await runDigest(home, { today });
+  const [, rendered] = (await readFile(file, "utf8")).match(/^1\. `([^`]*)`/m) ?? [];
+
+  assert.equal(rendered, longId, "the rendered id must be the real id, not a prefix");
+  await promoteCandidate(home, rendered);
+});
+
+test("a hostile category cannot escape its emphasis span", async () => {
+  const home = await tmpHome();
+  const today = "2026-08-05";
+  await writeFile(join(paths(home).reflections, `${today}-07-15-00.md`), "# r\n");
+  await writeFile(
+    join(paths(home).candidates, "cat.md"),
+    "---\nid: 2026-08-01-cat\ntitle: t\ncategory: \"behavioral\\n\\n## INJECTED\"\ncreated: '2026-08-01'\n---\n\nbody\n",
+  );
+
+  const { file } = await runDigest(home, { today });
+  const text = await readFile(file, "utf8");
+
+  assert.equal(text.match(/^## /gm).length, 1, "a category must not inject a heading");
+});
+
+test("the backlog total excludes records the cap can never reveal", async () => {
+  // "1 of 4 pending" over three unreadable files promises a backlog that no
+  // amount of triage will surface — the same unexplained silence goal 4 exists
+  // to prevent, in the counter itself.
+  const home = await tmpHome();
+  const today = "2026-08-05";
+  await writeFile(join(paths(home).reflections, `${today}-07-15-00.md`), "# r\n");
+  await writeCandidate(home, candidate("2026-08-01-real"));
+  for (const n of ["x", "y", "z"]) {
+    await writeFile(join(paths(home).candidates, `${n}.md`), "no frontmatter here\n");
+  }
+
+  const { file } = await runDigest(home, { today });
+  const text = await readFile(file, "utf8");
+
+  assert.match(text, /\(1 pending\)/);
+  assert.doesNotMatch(text, /of 4 pending/);
 });
 
 test("a candidate with no frontmatter is skipped, not rendered as undefined", async () => {
@@ -434,4 +490,13 @@ test("runDigest creates digest/ when the store predates it", async () => {
   const { file } = await runDigest(home, { today: "2026-08-05" });
   assert.ok(file, "digest must be written into a store that lacks digest/");
   assert.match(await readFile(file, "utf8"), /2026-08-01-a/);
+});
+
+test("truncation does not split a surrogate pair", async () => {
+  // Slicing by UTF-16 unit leaves a lone half, which the UTF-8 write replaces
+  // with U+FFFD — corruption in a file bound for a model's context.
+  const long = `${"a".repeat(198)}😀${"b".repeat(50)}`;
+  const out = flattenField(long);
+  assert.ok(out.isWellFormed(), "flattenField emitted a lone surrogate");
+  assert.doesNotMatch(out, /�/);
 });
