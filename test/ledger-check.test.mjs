@@ -133,6 +133,25 @@ test("R8b: the flagged set is exactly the uncited feature PRs, nothing else", ()
   assert.deepEqual(numbers(r), [571, 577, 593]);
 });
 
+// Found in the live run, not by reasoning: #595 "CAL-644 plan: store a wildcard
+// sentinel…" was flagged. It is a plan document — it goes through the plan gate,
+// not the code-review gate, so it can never earn a ledger row. Left in, it sits
+// in the digest every day with no action that would clear it, which is exactly
+// the noise that teaches you to skip the section.
+//
+// Bound, stated: this is a title heuristic. A PR that does not follow the
+// repo's naming convention is misclassified in either direction, and no test
+// here can catch that.
+test("a ticket-prefixed PLAN or SPEC PR is not implementation work", () => {
+  assert.equal(isFeaturePr("CAL-644 plan: store a wildcard sentinel"), false);
+  assert.equal(isFeaturePr("CAL-619 spec: derive the ledger"), false);
+  assert.equal(isFeaturePr("SOU-30 plan: daily action digest"), false);
+  assert.equal(isFeaturePr("CAL-644: store a wildcard sentinel"), true,
+    "the implementation PR for the same ticket still counts");
+  assert.equal(isFeaturePr("CAL-617: planned rollout of the rubric guard"), true,
+    "'planned' in the summary is not a plan PR");
+});
+
 test("isFeaturePr keys off a ticket prefix, not the word CAL", () => {
   assert.equal(isFeaturePr("CAL-617: refuse to start"), true);
   assert.equal(isFeaturePr("SOU-30: daily action digest"), true, "must not be callelo-specific");
