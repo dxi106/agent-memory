@@ -7,6 +7,7 @@ import {
   fetchLedgerText,
   fetchMergedPrs,
   runLedgerCheck,
+  safeLedgerCheck,
   LEDGER_PATH,
 } from "../lib/ledger-check.mjs";
 
@@ -235,4 +236,55 @@ test("runLedgerCheck surfaces a fetch failure instead of reporting a clean resul
     throw new Error("gh: not authenticated");
   };
   await assert.rejects(() => runLedgerCheck({ fetcher, repo: "o/r" }), /not authenticated/);
+});
+
+// ---------------------------------------------------------------------------
+// safeLedgerCheck — every failure becomes a REPORTED failure.
+//
+// `resolveFetcher` is injected rather than read from an env-var backdoor,
+// because a backdoor that disables production behaviour would leave this exact
+// seam — the one that decides what a failure looks like — permanently
+// unexercised.
+// ---------------------------------------------------------------------------
+
+
+test("safeLedgerCheck reports missing credentials instead of an empty clean result", async () => {
+  const r = await safeLedgerCheck({ resolveFetcher: async () => null, repo: "o/r" });
+  assert.match(r.error, /credential|gh auth|GITHUB_TOKEN/i);
+  assert.equal(r.complete, false, "no credentials means nothing was examined");
+  assert.deepEqual(r.missing, []);
+});
+
+test("safeLedgerCheck carries a fetch failure rather than swallowing it", async () => {
+  const r = await safeLedgerCheck({
+    resolveFetcher: async () => async () => {
+      throw new Error("GitHub API 503");
+    },
+    repo: "o/r",
+  });
+  assert.match(r.error, /503/);
+  assert.equal(r.complete, false);
+});
+
+test("safeLedgerCheck carries a resolver failure too", async () => {
+  const r = await safeLedgerCheck({
+    resolveFetcher: async () => {
+      throw new Error("gh binary missing");
+    },
+    repo: "o/r",
+  });
+  assert.match(r.error, /gh binary missing/);
+});
+
+test("safeLedgerCheck passes a successful result straight through, with no error key set", async () => {
+  const fetcher = async (path) =>
+    path.includes("/contents/")
+      ? { content: Buffer.from(LEDGER, "utf8").toString("base64"), encoding: "base64" }
+      : MERGED.map((p) => ({ ...p, merged_at: "2026-08-01T00:00:00Z" }));
+
+  const r = await safeLedgerCheck({ resolveFetcher: async () => fetcher, repo: "o/r", since: 569 });
+
+  assert.equal(r.error, undefined, "a clean run must not carry an error key");
+  assert.equal(r.complete, true);
+  assert.deepEqual(numbers(r), [571, 577, 593]);
 });
