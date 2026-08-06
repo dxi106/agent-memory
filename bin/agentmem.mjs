@@ -29,6 +29,8 @@ import {
   defaultClient as coachDefaultClient,
 } from "../lib/coach.mjs";
 import { syncToObsidian } from "../lib/obsidian.mjs";
+import { runDigest } from "../lib/digest.mjs";
+import { flattenField } from "../lib/lesson.mjs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -49,6 +51,7 @@ const COMMANDS = {
   reflect,
   ingest,
   coach,
+  digest,
   obsidian,
   help: usage,
 };
@@ -93,6 +96,9 @@ Commands:
   coach dismiss <id>        Dismiss a recommendation (sticky — never resurfaces)
   coach snooze <id> <days>  Snooze a recommendation for N days
   coach weekly              Write a weekly digest of recommendations
+  digest [--cap N]          Build today's action digest — oldest candidates
+                            first, capped. Writes nothing when there is
+                            nothing to do. Offline: no model call.
   obsidian sync             Sync pending tips + candidates + counts to the Obsidian vault
 
 Store: ${home}`);
@@ -356,6 +362,37 @@ async function obsidian(rest) {
   }
   console.log(`pending: ${result.pendingPath}`);
   if (result.digestPath) console.log(`digest:  ${result.digestPath}`);
+}
+
+async function digest(rest) {
+  const capFlag = rest.indexOf("--cap");
+  const opts = {};
+  if (capFlag !== -1) {
+    // Validate the raw token, not Number(raw): Number("") and Number(" ") are
+    // both 0, so `--cap "$UNSET_VAR"` used to coerce to a cap of zero and
+    // report "nothing to do" over a full backlog, exit 0. Silent death in the
+    // one feature built to make silence impossible.
+    const raw = rest[capFlag + 1];
+    if (typeof raw !== "string" || !/^\d+$/.test(raw)) {
+      throw new Error(`usage: agentmem digest [--cap N]  (N must be a non-negative integer)`);
+    }
+    opts.cap = Number(raw);
+  }
+
+  const result = await runDigest(home, opts);
+
+  if (!result.file) {
+    console.log("digest: nothing to do — no file written");
+    return;
+  }
+  if (result.warning) console.log(`digest: ${result.warning}`);
+  for (const c of result.items) {
+    // Flattened for the same reason render() flattens: this stdout is read by a
+    // terminal, a launchd log, or an agent that ran `agentmem digest` inside a
+    // session — the same sink, and a raw title can inject structure into it.
+    console.log(`  ${c.meta.id} — ${flattenField(c.meta.title)}`);
+  }
+  console.log(`digest: ${result.file}`);
 }
 
 function ageDays(isoDate) {

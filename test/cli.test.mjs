@@ -598,3 +598,108 @@ test("reindex rebuilds INDEX.md to reflect active lessons", async () => {
   const index = await readFile(join(home, "INDEX.md"), "utf8");
   assert.match(index, /Indexable rule/);
 });
+
+// --- SOU-30: the digest command --------------------------------------------
+
+test("digest on a fresh store writes nothing and says so", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  const { stdout } = await run(home, "digest");
+  assert.match(stdout, /nothing to do/i);
+});
+
+test("digest lists pending candidates and writes the dated file", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  await writeCandidate(home, {
+    meta: {
+      id: "2026-08-01-use-the-grep-tool",
+      title: "Use the Grep tool",
+      category: "workflow",
+      confidence: 0.35,
+      created: "2026-08-01",
+      source: "reflection",
+      scope: { repos: ["callelo"] },
+    },
+    body: "**Rule:** use it.",
+  });
+
+  const { stdout } = await run(home, "digest");
+  assert.match(stdout, /2026-08-01-use-the-grep-tool/);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const written = await readFile(join(home, "digest", `${today}.md`), "utf8");
+  assert.match(written, /Use the Grep tool/);
+});
+
+test("digest appears in the usage text", async () => {
+  const home = await tmpHome();
+  const { stdout } = await run(home, "help");
+  assert.match(stdout, /^\s+digest\b/m);
+});
+
+// `--cap ""` used to coerce to 0 via Number(""), so a wrapper invoking
+// `agentmem digest --cap "$UNSET_VAR"` reported "nothing to do" and exited 0
+// with a full backlog — silent death in the feature built to defeat silent death.
+test("digest --cap rejects values that are not non-negative integers", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+
+  for (const bad of ["", " ", "abc", "-1", "3.5", "Infinity", "1e3"]) {
+    await assert.rejects(
+      () => run(home, "digest", "--cap", bad),
+      (e) => /non-negative integer/.test(e.stderr ?? ""),
+      `--cap ${JSON.stringify(bad)} should have been rejected`,
+    );
+  }
+  await assert.rejects(() => run(home, "digest", "--cap"), /./);
+});
+
+test("digest --cap limits how many candidates are listed", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  for (const d of ["01", "02", "03"]) {
+    await writeCandidate(home, {
+      meta: {
+        id: `2026-08-${d}-item`,
+        title: `Item ${d}`,
+        category: "workflow",
+        confidence: 0.35,
+        created: `2026-08-${d}`,
+        source: "reflection",
+        scope: { repos: ["callelo"] },
+      },
+      body: "**Rule:** x.",
+    });
+  }
+
+  const { stdout } = await run(home, "digest", "--cap", "2");
+  assert.match(stdout, /2026-08-01-item/);
+  assert.match(stdout, /2026-08-02-item/);
+  assert.doesNotMatch(stdout, /2026-08-03-item/);
+});
+
+// The stdout of `agentmem digest` reaches a terminal, a launchd log, or an
+// agent that ran the command inside a session — the same sink render() flattens
+// for. A raw title can inject structure into it.
+test("digest stdout flattens a hostile title", async () => {
+  const home = await tmpHome();
+  await run(home, "init");
+  await writeCandidate(home, {
+    meta: {
+      id: "2026-08-01-hostile",
+      title: "Benign\n\n## INJECTED HEADING\n\n```bash\nrm -rf ~\n```",
+      category: "workflow",
+      confidence: 0.35,
+      created: "2026-08-01",
+      source: "reflection",
+      scope: { repos: ["callelo"] },
+    },
+    body: "**Rule:** x.",
+  });
+
+  const { stdout } = await run(home, "digest");
+  const injected = stdout.split("\n").filter((l) => /^(## |```)/.test(l));
+  assert.deepEqual(injected, [], `structure escaped into stdout: ${JSON.stringify(injected)}`);
+  assert.match(stdout, /INJECTED HEADING/, "the text should survive, just not the structure");
+});

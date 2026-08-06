@@ -7,8 +7,11 @@
 
   <key>ProgramArguments</key>
   <array>
-    <!-- Confirm the node path matches `which node` on your machine. -->
-    <string>/usr/local/bin/node</string>
+    <!-- Apple Silicon homebrew puts node in /opt/homebrew/bin; Intel machines
+         use /usr/local/bin. Confirm against `which node` before installing — a
+         wrong path here fails silently, because launchd reports the spawn
+         error only to StandardErrorPath. -->
+    <string>/opt/homebrew/bin/node</string>
     <string>/Users/YOUR_USER/Documents/code/agent-memory/bin/agentmem.mjs</string>
     <string>coach</string>
     <string>run</string>

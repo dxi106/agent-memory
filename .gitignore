@@ -43,6 +43,8 @@ recommendations/*
 !recommendations/.gitkeep
 reflections/*
 !reflections/.gitkeep
+digest/*
+!digest/.gitkeep
 archive/*
 !archive/.gitkeep
 lessons/**
