@@ -199,10 +199,16 @@ test("a stamp that cannot be written does not break the session", async () => {
   }
 });
 
-test("a digest larger than the 64 KB pipe buffer arrives whole and is still stamped", async () => {
-  // The cap bounds item count, not bytes, and the lessons block shares this
-  // payload. Past 64 KB a write-then-exit adapter truncates silently, which
-  // would deliver a half digest and stamp the day as done.
+// NOT a test of the flush guard, despite the size — measured, not assumed.
+// Reverting runAdapter to write-then-exit leaves this file 10/10 green, because
+// awaiting the stamp yields to the event loop long enough for the pipe to
+// drain. The guard is pinned at the runtime level by R11, whose large-payload
+// case passes NO onDelivered — which is the genuinely vulnerable shape, and the
+// one the other three adapters use.
+//
+// What this pins is end-to-end: a multi-hundred-KB digest survives the whole
+// path intact, delimiter closed, and is stamped exactly once.
+test("a large digest survives the full hook path intact and is stamped", async () => {
   const home = await tmpHome();
   const t = today();
   await writeFile(join(paths(home).reflections, `${t}-07-15-00.md`), "# r\n");
