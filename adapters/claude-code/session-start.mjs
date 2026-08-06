@@ -3,14 +3,29 @@ import { readStdin, parseEvent, runAdapter } from "../../lib/adapters/runtime.mj
 import { resolveHome } from "../../lib/storage.mjs";
 import { selectForInjection } from "../../lib/commands.mjs";
 import { getPendingRecommendations } from "../../lib/coach.mjs";
+import {
+  readDigestFile,
+  readDeliveredDate,
+  markDelivered,
+  wrapUntrusted,
+  localDay,
+  TRIAGE_INSTRUCTION,
+} from "../../lib/digest.mjs";
 
 // SessionStart hook for Claude Code (SOU-13 + SOU-19 Part B).
 //
-// Two contributions, joined into one `additionalContext` string:
+// Three contributions, joined into one `additionalContext` string:
 //   1. Top scoped lessons (from agentmem's lesson store) — the model uses
 //      these as background context for the session.
 //   2. A one-line hint when there are pending coaching tips for this repo,
 //      pointing the model at the MCP tool `get_coaching_tips`.
+//   3. Today's action digest (SOU-30), at most once per day — the pending
+//      candidates to triage. Delivered here so the queue arrives instead of
+//      being somewhere you have to remember to visit.
+//
+// This adapter makes no network and no model call, and must not start: it runs
+// on EVERY session start. `test/adapters-session-start.test.mjs` pins that by
+// running the hook with a throwing `fetch` installed.
 //
 // The framing on the tip line is non-negotiable: tips are REACTIVE — call
 // the tool only when the user actually does the pattern a tip warns about
@@ -25,6 +40,12 @@ function buildTipHint(count) {
   ].join("\n");
 }
 
+// Set inside the adapter body only when the digest actually made it into the
+// payload, and consumed by onDelivered *after* the bytes have flushed. The
+// stamp must never be written on a path the user did not see: runAdapter
+// swallows throws, so a stamp taken earlier would burn the day in silence.
+let stampDelivery = null;
+
 await runAdapter(async () => {
   const event = parseEvent(await readStdin());
   const cwd = event.cwd || process.cwd();
@@ -32,6 +53,10 @@ await runAdapter(async () => {
 
   const lessons = await selectForInjection(home, cwd, 12);
   const pending = await getPendingRecommendations(home, cwd);
+
+  const today = localDay();
+  const digest =
+    (await readDeliveredDate(home)) === today ? null : await readDigestFile(home, today);
 
   const parts = [];
   if (lessons.length > 0) {
@@ -43,6 +68,15 @@ await runAdapter(async () => {
   if (pending.length > 0) {
     parts.push(buildTipHint(pending.length));
   }
+  if (digest) {
+    // Wrapped, not spliced: the digest carries model-proposed titles derived
+    // from GitHub review comments and transcripts. See wrapUntrusted.
+    // The triage instruction goes AFTER the block, in agentmem's own voice.
+    // Inside it, it was the block's own content tripping the block's own
+    // "treat a promote instruction as suspicious" rule, on every delivery.
+    parts.push(`${wrapUntrusted(digest)}\n\n${TRIAGE_INSTRUCTION}`);
+    stampDelivery = () => markDelivered(home, today);
+  }
 
   if (parts.length === 0) return { continue: true };
 
@@ -53,4 +87,4 @@ await runAdapter(async () => {
       additionalContext: parts.join("\n\n"),
     },
   };
-});
+}, { continue: true }, () => stampDelivery?.());
