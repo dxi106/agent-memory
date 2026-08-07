@@ -798,3 +798,37 @@ test("digest CLI reports an incomplete sweep instead of printing nothing", async
   assert.match(stdout, /600/, "name where the sweep stopped");
   assert.match(stdout, /not checked|incomplete|stopped/i);
 });
+
+// Security review round 1, finding 3. `led.error` is execFile's message: the
+// full command line plus the child's ENTIRE stderr — whatever `gh` chose to
+// print. The digest file capped it at 160 chars; the CLI printed it raw to a
+// terminal, a launchd log, or the transcript of an agent that ran the command
+// inside a session. Mutation-checked: without the cap this test fails.
+test("a failing gh cannot dump its whole stderr to the CLI", async () => {
+  const home = await tmpHome();
+  await execFileAsync(process.execPath, [BIN, "init"], {
+    env: { ...process.env, AGENTMEM_HOME: home },
+  });
+
+  const bin = await mkdtemp(join(tmpdir(), "agentmem-badgh-"));
+  await writeFile(
+    join(bin, "gh"),
+    `#!/usr/bin/env bash\n` +
+      `if [ "$1" = "auth" ]; then exit 0; fi\n` +
+      `echo "gh: Not Found (HTTP 404)" >&2\n` +
+      `echo "hint: token loaded from /Users/victim/.config/gh/hosts.yml (ghp_AAAABBBBCCCCDDDD)" >&2\n` +
+      `printf 'padding %.0s' $(seq 1 400) >&2\n` +
+      `exit 1\n`,
+    { mode: 0o755 },
+  );
+
+  const { stdout } = await execFileAsync(process.execPath, [BIN, "digest"], {
+    env: { ...process.env, AGENTMEM_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  const line = stdout.split("\n").find((l) => l.includes("could not run")) ?? "";
+  assert.ok(line, "the failure is still reported");
+  assert.ok(line.length < 260, `the error line must be bounded, got ${line.length} chars`);
+  assert.doesNotMatch(stdout, /ghp_AAAABBBB/, "a token-shaped string must not survive the cap");
+  assert.doesNotMatch(stdout, /\/Users\/victim/, "nor an absolute path from deep in the stderr");
+});
