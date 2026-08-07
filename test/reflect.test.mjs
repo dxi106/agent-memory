@@ -546,15 +546,59 @@ test("runReflection succeeds when every candidate is skipped as an existing dupl
   assert.equal((await listCandidates(home)).length, 1, "the seeded candidate is untouched");
 });
 
-// KILLS: firing reflect's accounted-for guard on a run that hit the per-run cap.
-// The cap is a recorded reason, and candidates were written, so the run stands.
-test("runReflection succeeds when the per-run cap is what stopped it", async () => {
+// KILLS: dropping the cap-skip count from reflect's accounted-for sum.
+//
+// The cap must be ZERO for this to bite. With any positive cap some candidates
+// are written, so `accountedFor` is non-zero via candidates.length whether or
+// not skippedCapped is counted — the first version of this test used a cap of 2
+// and pinned nothing at all. A cap of 0 is the only shape where skippedCapped is
+// the SOLE reason the run is accounted for, and it is a real configuration:
+// "propose nothing this run". (Code review round 2 caught the earlier version.)
+test("runReflection succeeds when the per-run cap is the only thing accounting for the run", async () => {
   const home = await tmpHome();
   await writeFile(join(home, "config.json"), JSON.stringify({
-    reflection: { lookback_days: 7, min_signals_to_reflect: 1, max_candidates_per_run: 2 },
+    reflection: { lookback_days: 7, min_signals_to_reflect: 1, max_candidates_per_run: 0 },
   }));
   await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
   const client = fakeClient(async () => jsonContent({ candidates: nCandidates(5), rescore: [] }));
   const result = await runReflection({ home, client });
-  assert.equal(result.candidates.length, 2);
+  assert.equal(result.candidates.length, 0);
+  assert.deepEqual(await listCandidates(home), []);
+});
+
+// --- Review round 2 -------------------------------------------------------
+
+// KILLS: writing a reflection log from the failure paths under --dry-run.
+// A dry run promises no side effects, and coach's failRun already guards on
+// !dryRun — reflect did not, so `agentmem reflect --dry-run` on a failing run
+// dropped a file containing transcript-derived model output into the store.
+// (Security review round 2, LOW.)
+test("runReflection --dry-run writes no log even when the run fails", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({
+    candidates: [{ id: "../../etc/passwd", title: "a", category: "code", rule: "R" }],
+    rescore: [],
+  }));
+
+  await assert.rejects(
+    () => runReflection({ home, client, dryRun: true }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unaccounted",
+  );
+  assert.deepEqual(await readdir(paths(home).reflections), [], "a dry run must leave nothing behind");
+});
+
+// KILLS: the same omission on the truncated/unparseable failure path, which
+// predates the accounted-for guard and had the identical shape.
+test("runReflection --dry-run writes no log when the response is truncated", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async (req) => ({
+    content: [{ type: "text", text: '{"candidates": [{"id": "a", "categ' }],
+    usage: { input_tokens: 5000, output_tokens: req.max_tokens },
+    stop_reason: "max_tokens",
+  }));
+
+  await assert.rejects(() => runReflection({ home, client, dryRun: true }), (e) => e.kind === "truncated");
+  assert.deepEqual(await readdir(paths(home).reflections), []);
 });

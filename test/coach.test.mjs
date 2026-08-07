@@ -1165,3 +1165,50 @@ test("runCoachingPass caps how many rejected ids it names", async () => {
     `expected exactly 10 ids named, got: ${err.message}`,
   );
 });
+
+// KILLS: accepting a top-level array in the real coach path. End-to-end
+// companion to the parseModelJson unit test — proves the silent zero this
+// reintroduces is caught by the pass, not just by the parser.
+test("runCoachingPass rejects an array-shaped response instead of writing zero", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  // Two perfectly valid recommendations — just missing the object wrapper.
+  const client = fakeClient(async () => jsonResponse([1, 2].map((n) => ({
+    id: `2026-08-07-real-${n}`,
+    title: "T", severity: "high", category: "anti_pattern",
+    body: "b", evidence: ["one", "two"], next_step: "s",
+  }))));
+
+  await assert.rejects(
+    () => runCoachingPass({ home, client }),
+    (e) => e instanceof ModelOutputError && e.kind === "unparseable",
+  );
+  assert.deepEqual(await listRecommendations(home), []);
+});
+
+// KILLS: dropping `rejected` from the counts failRun forwards. The failure log
+// otherwise records `- recs_rejected: 0` on the very run whose `- failure:`
+// line names every rejected id — a forensic record that contradicts itself.
+test("the coaching failure log's rejected count matches the ids it names", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: [1, 2, 3].map((n) => ({
+      id: `2026-08-07-dropped-${n}`,
+      title: "T", severity: "high", category: "anti_pattern",
+      body: "b", evidence: ["only one"], next_step: "s",
+    })),
+  }));
+
+  await assert.rejects(() => runCoachingPass({ home, client }), (e) => e.kind === "unaccounted");
+
+  const logs = (await readdir(paths(home).reflections)).filter((f) => f.startsWith("coach-"));
+  const text = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(text, /- recs_rejected: 3$/m, `contradicts its own failure line:\n${text}`);
+});

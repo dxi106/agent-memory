@@ -226,3 +226,66 @@ test("parseModelJson rejects a large unbalanced payload instead of chewing on it
     (e) => e instanceof ModelOutputError && e.kind === "unparseable",
   );
 });
+
+// --- Review round 2 -------------------------------------------------------
+
+// KILLS: accepting a top-level JSON array. `typeof [] === "object"`, so the
+// scalar guard above waves an array straight through; both passes then read a
+// missing `recommendations` / `candidates` key as an empty list and exit 0.
+// That is SOU-40's exact signature, and the accounted-for guard CANNOT catch
+// it, because `proposed` is 0 and the guard's own precondition is false.
+// Confirmed by execution before this test was written: a two-recommendation
+// array produced { recs: 0, proposed: 0, rejected: [] }. (Codex round 2.)
+test("parseModelJson rejects a top-level array, which would read as zero items", () => {
+  for (const raw of ['[{"id": "a"}, {"id": "b"}]', "[]"]) {
+    assert.throws(
+      () => parseModelJson(raw, "coaching"),
+      (e) => e instanceof ModelOutputError && e.kind === "unparseable",
+      `a top-level array must not be read as an answer: ${raw}`,
+    );
+  }
+});
+
+// KILLS: over-tightening the check above into "reject anything unusual". A
+// plain object is the contract, and an object whose list is legitimately empty
+// stays a quiet success. The paired control.
+test("parseModelJson still accepts an ordinary object", () => {
+  assert.deepEqual(parseModelJson('{"recommendations": []}', "coaching"), { recommendations: [] });
+});
+
+// KILLS: listing "pause_turn" as a completed stop_reason. Anthropic classifies
+// it as INCOMPLETE — the server-tool loop hit its iteration limit, the model did
+// not finish. Treating it as complete suppresses the fallback. Dormant today
+// (neither pass sends `tools`), which is exactly why it needs a test: it goes
+// live the moment anyone adds one.
+test("isTruncated does not accept pause_turn as a finished response", () => {
+  assert.equal(isTruncated({ stop_reason: "pause_turn", usage: { output_tokens: 4096 } }, 4096), true);
+});
+
+// KILLS: failing to treat a context-window overflow as truncation. It is a
+// distinct stop_reason from max_tokens and means the same thing for us: the
+// answer is cut off and the run must not be reported as a success.
+test("isTruncated treats a context-window overflow as truncation", () => {
+  assert.equal(
+    isTruncated({ stop_reason: "model_context_window_exceeded", usage: { output_tokens: 10 } }, 4096),
+    true,
+  );
+});
+
+// KILLS: reporting nothing when V8 gives no position. Measured on node v24.7.0:
+// a parse that fails at position 0 — the common case, where the model emitted
+// prose — produces "Unexpected token 'D', \"Dan Iacono\"... is not valid JSON",
+// which carries NO position. Dropping V8's message to stop it echoing the
+// model's text (round 1) therefore silently removed the diagnostic exactly
+// where an operator most needs one. The size is leak-free and always available.
+test("parseModelJson reports the size of what it could not read when V8 gives no position", () => {
+  const prose = "I could not comply with that request.";
+  assert.throws(
+    () => parseModelJson(prose, "coaching"),
+    (e) => {
+      assert.match(e.message, new RegExp(`${prose.length} characters`), `no size reported: ${e.message}`);
+      assert.ok(!/could not comply/.test(e.message), `leaked the model's text: ${e.message}`);
+      return true;
+    },
+  );
+});
