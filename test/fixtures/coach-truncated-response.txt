@@ -1,0 +1,92 @@
+```json
+{
+  "recommendations": [
+    {
+      "id": "2026-08-07-synthetic-recommendation-1",
+      "title": "Synthetic recommendation 1 — stands in for a real coaching finding",
+      "severity": "medium",
+      "category": "anti_pattern",
+      "body": "Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1. Body paragraph for synthetic recommendation 1.",
+      "evidence": [
+        "2026-08-02: synthetic evidence line one for recommendation 1",
+        "hot_file: path/to/file-1.md — 1 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 1, stated as an action.",
+      "related_knowledge": "Synthetic knowledge entry 1"
+    },
+    {
+      "id": "2026-08-07-synthetic-recommendation-2",
+      "title": "Synthetic recommendation 2 — stands in for a real coaching finding",
+      "severity": "high",
+      "category": "anti_pattern",
+      "body": "Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2. Body paragraph for synthetic recommendation 2.",
+      "evidence": [
+        "2026-08-03: synthetic evidence line one for recommendation 2",
+        "hot_file: path/to/file-2.md — 2 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 2, stated as an action.",
+      "related_knowledge": "Synthetic knowledge entry 2"
+    },
+    {
+      "id": "2026-08-07-synthetic-recommendation-3",
+      "title": "Synthetic recommendation 3 — stands in for a real coaching finding",
+      "severity": "medium",
+      "category": "workflow_gap",
+      "body": "Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3. Body paragraph for synthetic recommendation 3.",
+      "evidence": [
+        "2026-08-04: synthetic evidence line one for recommendation 3",
+        "hot_file: path/to/file-3.md — 3 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 3, stated as an action.",
+      "related_knowledge": "Synthetic knowledge entry 3"
+    },
+    {
+      "id": "2026-08-07-synthetic-recommendation-4",
+      "title": "Synthetic recommendation 4 — stands in for a real coaching finding",
+      "severity": "high",
+      "category": "anti_pattern",
+      "body": "Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4. Body paragraph for synthetic recommendation 4.",
+      "evidence": [
+        "2026-08-05: synthetic evidence line one for recommendation 4",
+        "hot_file: path/to/file-4.md — 4 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 4, stated as an action.",
+      "related_knowledge": "Synthetic knowledge entry 4"
+    },
+    {
+      "id": "2026-08-07-synthetic-recommendation-5",
+      "title": "Synthetic recommendation 5 — stands in for a real coaching finding",
+      "severity": "medium",
+      "category": "anti_pattern",
+      "body": "Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5. Body paragraph for synthetic recommendation 5.",
+      "evidence": [
+        "2026-08-06: synthetic evidence line one for recommendation 5",
+        "hot_file: path/to/file-5.md — 5 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 5, stated as an action.",
+      "related_knowledge": "Synthetic knowledge entry 5"
+    },
+    {
+      "id": "2026-08-07-synthetic-recommendation-6",
+      "title": "Synthetic recommendation 6 — stands in for a real coaching finding",
+      "severity": "high",
+      "category": "workflow_gap",
+      "body": "Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6. Body paragraph for synthetic recommendation 6.",
+      "evidence": [
+        "2026-08-07: synthetic evidence line one for recommendation 6",
+        "hot_file: path/to/file-6.md — 6 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 6, stated as an action.",
+      "related_knowledge": "Synthetic knowledge entry 6"
+    },
+    {
+      "id": "2026-08-07-synthetic-recommendation-7",
+      "title": "Synthetic recommendation 7 — stands in for a real coaching finding",
+      "severity": "medium",
+      "category": "anti_pattern",
+      "body": "Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7. Body paragraph for synthetic recommendation 7.",
+      "evidence": [
+        "2026-08-01: synthetic evidence line one for recommendation 7",
+        "hot_file: path/to/file-7.md — 7 commits in 14d"
+      ],
+      "next_step": "Synthetic next step for recommendation 7, stated as an ac

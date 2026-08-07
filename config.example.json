@@ -4,13 +4,15 @@
     "model": "claude-sonnet-4-6",
     "claude_cli": "claude",
     "min_signals_to_reflect": 3,
-    "max_candidates_per_run": 3
+    "max_candidates_per_run": 3,
+    "max_output_tokens": 16384
   },
   "coaching": {
     "lookback_days": 7,
     "model": "claude-sonnet-4-6",
     "max_recommendations_per_run": 8,
-    "min_evidence_per_recommendation": 2
+    "min_evidence_per_recommendation": 2,
+    "max_output_tokens": 16384
   },
   "watch_repos": [
     "your-user/your-repo",

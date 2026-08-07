@@ -319,6 +319,69 @@ test("buildReflectionRequest places stable context first and adds cache breakpoi
   assert.equal(last.cache_control?.type, "ephemeral");
 });
 
+// --- SOU-40: reflect shares coach's silent-truncation defect ---------------
+// reflect.mjs carried the same hardcoded max_tokens: 4096 and the same
+// `tryParseJson(raw) || {}` swallow. It has stayed under the cap only because
+// SOU-31 capped candidates at 3 per run — protected by accident, not design.
+
+// KILLS: reverting buildReflectionRequest's max_tokens to the hardcoded 4096.
+test("buildReflectionRequest asks for more output than the 4096 cap that truncated coach", async () => {
+  const home = await tmpHome();
+  const req = await buildReflectionRequest({ home, signals: [] });
+  assert.ok(req.max_tokens > 4096, `expected > 4096, got ${req.max_tokens}`);
+});
+
+// KILLS: ignoring reflection.max_output_tokens.
+test("buildReflectionRequest honours reflection.max_output_tokens", async () => {
+  const home = await tmpHome();
+  const req = await buildReflectionRequest({ home, signals: [], maxOutputTokens: 9001 });
+  assert.equal(req.max_tokens, 9001);
+});
+
+// KILLS: deleting the assertNotTruncated call in runReflection — without it a
+// truncated nightly reflect writes zero candidates and exits 0, exactly as
+// coach did on 2026-08-07.
+test("runReflection rejects a response truncated at the output cap", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async (req) => ({
+    content: [{ type: "text", text: '{"candidates": [{"id": "a", "categ' }],
+    usage: { input_tokens: 5000, output_tokens: req.max_tokens },
+    stop_reason: "max_tokens",
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "truncated",
+  );
+  assert.deepEqual(await listCandidates(home), []);
+});
+
+// KILLS: restoring `tryParseJson(raw) || {}` in runReflection.
+test("runReflection rejects unparseable output rather than writing zero candidates", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => ({
+    content: [{ type: "text", text: "I could not comply with that request." }],
+    usage: { input_tokens: 5000, output_tokens: 12 },
+    stop_reason: "end_turn",
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unparseable",
+  );
+});
+
+// KILLS: making the guards above fire on a valid, empty reflection — the
+// control that proves they are not flag-everything detectors.
+test("runReflection succeeds when the model validly proposes no candidates", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({ candidates: [], rescore: [] }));
+  const result = await runReflection({ home, client });
+  assert.equal(result.skipped, false);
+  assert.deepEqual(result.candidates, []);
+});
+
 // --- SOU-31: the reflection pass must not flood the candidate queue ---------
 // Measured 2026-08-05: ~9.7 candidates proposed per nightly run (max 18), from
 // a prompt with no cap. The cap has to hold in CODE, because a prompt
