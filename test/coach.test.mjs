@@ -530,9 +530,14 @@ test("runCoachingPass succeeds quietly when the model validly proposes nothing",
   assert.deepEqual(result.recommendations, []);
 });
 
-// KILLS: making the accounted-for check fire when the reason for writing
-// nothing IS recorded — every proposal already on file. That is accounted
-// for, and must stay a success.
+// KILLS: dropping `skippedExisting` (or any other bucket) from the
+// accounted-for sum. Every proposal here is already on file, so the run is
+// fully accounted for and must stay a success — an accounting that misses a
+// bucket would raise a false alarm on an ordinary quiet week.
+//
+// Note the mutation this does NOT kill: removing the `proposed > 0` guard
+// leaves this test green, because accountedFor is 1 here, not 0. The test
+// above ("succeeds quietly...") is what kills that one.
 test("runCoachingPass succeeds when every proposal is skipped for a recorded reason", async () => {
   const home = await tmpHome();
   await seedKnowledge(home);
