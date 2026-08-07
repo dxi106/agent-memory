@@ -30,6 +30,7 @@ import {
 } from "../lib/coach.mjs";
 import { syncToObsidian } from "../lib/obsidian.mjs";
 import { runDigest, TRIAGE_INSTRUCTION } from "../lib/digest.mjs";
+import { safeLedgerCheck } from "../lib/ledger-check.mjs";
 import { flattenField } from "../lib/lesson.mjs";
 
 const args = process.argv.slice(2);
@@ -97,6 +98,7 @@ Commands:
   coach snooze <id> <days>  Snooze a recommendation for N days
   coach weekly              Write a weekly digest of recommendations
   digest [--cap N]          Build today's action digest — oldest candidates
+         [--no-ledger]      Skip the merged-without-a-close-out check (offline)
                             first, capped. Writes nothing when there is
                             nothing to do. Offline: no model call.
   obsidian sync             Sync pending tips + candidates + counts to the Obsidian vault
@@ -379,7 +381,27 @@ async function digest(rest) {
     opts.cap = Number(raw);
   }
 
+  if (!rest.includes("--no-ledger")) {
+    opts.ledger = await safeLedgerCheck();
+  }
+
   const result = await runDigest(home, opts);
+  const led = result.ledger;
+
+  // Reported BEFORE the no-file early return, not after. A failed check no
+  // longer forces a digest to be written (it would deliver a daily tooling
+  // complaint into every session), so on a machine with no credentials the
+  // early return was swallowing the only notice the operator would ever get —
+  // moving the false clean rather than removing it.
+  if (led?.error) {
+    // Flattened and capped exactly as render() does. Raw, this is execFile's
+    // message: the full command line plus the child's entire stderr, which is
+    // whatever `gh` decided to print — absolute paths and token-shaped strings
+    // included — echoed unbounded to a terminal, a launchd log, or the
+    // transcript of an agent that ran `agentmem digest` inside a session.
+    console.log(`digest: close-out check could not run — ${flattenField(String(led.error), 160)}`);
+    console.log("  fix: `gh auth login`, or set GITHUB_TOKEN. `--no-ledger` skips the check.");
+  }
 
   if (!result.file) {
     console.log("digest: nothing to do — no file written");
@@ -393,6 +415,19 @@ async function digest(rest) {
     console.log(`  ${c.meta.id} — ${flattenField(c.meta.title)}`);
   }
   if (result.items.length > 0) console.log(TRIAGE_INSTRUCTION);
+  if (led && !led.error && led.missing.length > 0) {
+    console.log(`digest: ${led.missing.length} merged PR(s) with no ledger close-out`);
+    for (const pr of led.missing) {
+      console.log(`  ${led.repo} #${pr.number} — ${flattenField(pr.title)}`);
+    }
+  } else if (led && !led.complete) {
+    // render() has always had this third state; the CLI summary had only two,
+    // so an incomplete sweep printed a bare path with no reason a file existed.
+    // Silence here is the false clean this whole check exists to prevent.
+    console.log(
+      `digest: close-out sweep stopped at #${led.oldestSeen}; anything older was not checked`,
+    );
+  }
   console.log(`digest: ${result.file}`);
 }
 

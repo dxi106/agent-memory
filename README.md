@@ -113,11 +113,26 @@ Run `agentmem help` for the full list. Highlights:
 - `agentmem coach show <id|all>` / `accept <id|all>` / `dismiss <id>` /
   `snooze <id> <days>` — manage recommendations. `dismiss` is sticky.
 - `agentmem coach weekly` — write a digest to `recommendations/weekly/YYYY-WW.md`.
-- `agentmem digest [--cap N]` — build today's action digest into
+- `agentmem digest [--cap N] [--no-ledger]` — build today's action digest into
   `digest/YYYY-MM-DD.md`: the oldest pending candidates, capped (default 6),
-  plus a warning if no reflection has run in 3 days. Writes **nothing** when
-  there is nothing to do, so an untouched day leaves no file. Fully offline —
-  no model call, which is what lets the SessionStart hook read it.
+  plus a warning if no reflection has run in 3 days, plus any merged feature PR
+  with no findings-ledger close-out. Writes **nothing** when there is nothing
+  to do, so an untouched day leaves no file. No model call — which is what lets
+  the SessionStart hook read the file it produces.
+
+  The close-out check reads `docs/review-findings-ledger.md` from **`main` on
+  the server**, never a local checkout, and `--no-ledger` skips it. That is the
+  one part of `digest` that touches the network; the hook itself never does.
+  A local read is the known way to get a confidently wrong answer here — the
+  session that designed this read a checkout six commits behind, concluded the
+  rows for one PR did not exist, and was wrong.
+
+  It flags only **feature** PRs (title opening with a ticket id, e.g.
+  `CAL-617:`). Docs, chore and build PRs never go through the review gate, so
+  they can never have a ledger row; flagging them turned a 12-line signal into
+  34 lines of noise when measured against the real corpus. A failed check
+  prints *"could not run"* rather than silently rendering nothing, because an
+  absent section already means "nothing missing".
 
   Ordering is `(created_at, id)`, falling back to `(created, id)` for
   candidates written before the timestamp existed. Oldest-first is the only

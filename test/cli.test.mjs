@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { localDay } from "../lib/digest.mjs";
 import { writeCandidate } from "../lib/storage.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -604,7 +605,7 @@ test("reindex rebuilds INDEX.md to reflect active lessons", async () => {
 test("digest on a fresh store writes nothing and says so", async () => {
   const home = await tmpHome();
   await run(home, "init");
-  const { stdout } = await run(home, "digest");
+  const { stdout } = await run(home, "digest", "--no-ledger");
   assert.match(stdout, /nothing to do/i);
 });
 
@@ -624,10 +625,11 @@ test("digest lists pending candidates and writes the dated file", async () => {
     body: "**Rule:** use it.",
   });
 
-  const { stdout } = await run(home, "digest");
+  const { stdout } = await run(home, "digest", "--no-ledger");
   assert.match(stdout, /2026-08-01-use-the-grep-tool/);
 
-  const today = new Date().toISOString().slice(0, 10);
+  // localDay(), not the UTC day: runDigest names the file by the LOCAL day.
+  const today = localDay();
   const written = await readFile(join(home, "digest", `${today}.md`), "utf8");
   assert.match(written, /Use the Grep tool/);
 });
@@ -647,12 +649,12 @@ test("digest --cap rejects values that are not non-negative integers", async () 
 
   for (const bad of ["", " ", "abc", "-1", "3.5", "Infinity", "1e3"]) {
     await assert.rejects(
-      () => run(home, "digest", "--cap", bad),
+      () => run(home, "digest", "--no-ledger", "--cap", bad),
       (e) => /non-negative integer/.test(e.stderr ?? ""),
       `--cap ${JSON.stringify(bad)} should have been rejected`,
     );
   }
-  await assert.rejects(() => run(home, "digest", "--cap"), /./);
+  await assert.rejects(() => run(home, "digest", "--no-ledger", "--cap"), /./);
 });
 
 test("digest --cap limits how many candidates are listed", async () => {
@@ -673,7 +675,7 @@ test("digest --cap limits how many candidates are listed", async () => {
     });
   }
 
-  const { stdout } = await run(home, "digest", "--cap", "2");
+  const { stdout } = await run(home, "digest", "--no-ledger", "--cap", "2");
   assert.match(stdout, /2026-08-01-item/);
   assert.match(stdout, /2026-08-02-item/);
   assert.doesNotMatch(stdout, /2026-08-03-item/);
@@ -698,8 +700,135 @@ test("digest stdout flattens a hostile title", async () => {
     body: "**Rule:** x.",
   });
 
-  const { stdout } = await run(home, "digest");
+  const { stdout } = await run(home, "digest", "--no-ledger");
   const injected = stdout.split("\n").filter((l) => /^(## |```)/.test(l));
   assert.deepEqual(injected, [], `structure escaped into stdout: ${JSON.stringify(injected)}`);
   assert.match(stdout, /INJECTED HEADING/, "the text should survive, just not the structure");
+});
+
+// ---------------------------------------------------------------------------
+// --no-ledger must actually suppress the network check.
+//
+// Without it every digest test in this file reaches GitHub — which is how this
+// was caught: adding the check turned "digest on a fresh store writes nothing"
+// into a live API call that returned 14 real PRs.
+//
+// The assertion is offline by construction. With no `gh` on PATH and no token,
+// a check that DID run resolves no fetcher and renders "could not run". So the
+// absence of that string is positive evidence the flag was honoured, not just
+// the absence of a symptom.
+// ---------------------------------------------------------------------------
+
+test("digest --no-ledger runs no close-out check at all", async () => {
+  const home = await tmpHome();
+  await execFileAsync(process.execPath, [BIN, "init"], { env: { ...process.env, AGENTMEM_HOME: home } });
+  await writeFile(join(home, "reflections", "2026-08-06-07-15-00.md"), "# r\n");
+
+  const { stdout } = await execFileAsync(process.execPath, [BIN, "digest", "--no-ledger"], {
+    env: {
+      ...process.env,
+      AGENTMEM_HOME: home,
+      PATH: "/nonexistent",
+      GITHUB_TOKEN: "",
+      GH_TOKEN: "",
+    },
+  });
+
+  assert.doesNotMatch(stdout, /could not run/i, "the check must not have been attempted");
+  assert.match(stdout, /nothing to do/i);
+});
+
+test("digest without --no-ledger DOES attempt the check, and reports why it could not run", async () => {
+  const home = await tmpHome();
+  await execFileAsync(process.execPath, [BIN, "init"], { env: { ...process.env, AGENTMEM_HOME: home } });
+  await writeFile(join(home, "reflections", "2026-08-06-07-15-00.md"), "# r\n");
+
+  // Same offline environment — so this exercises the default path without a
+  // network call, and pins that the default IS to check.
+  const { stdout } = await execFileAsync(process.execPath, [BIN, "digest"], {
+    env: {
+      ...process.env,
+      AGENTMEM_HOME: home,
+      PATH: "/nonexistent",
+      GITHUB_TOKEN: "",
+      GH_TOKEN: "",
+    },
+  });
+
+  assert.match(stdout, /close-out check could not run/i);
+  assert.match(stdout, /credential|gh auth|GITHUB_TOKEN/i, "say what is missing");
+});
+
+test("--no-ledger is documented in the usage text", async () => {
+  const { stdout } = await run(await tmpHome(), "help");
+  assert.match(stdout, /--no-ledger/);
+});
+
+// The CLI summary had two of render()'s three ledger states. The third —
+// "scan incomplete, but nothing missing in what I did see" — printed NOTHING,
+// so `agentmem digest` reported a bare path with no reason a file was written.
+// Reproduced end-to-end before fixing: a fake `gh` on PATH drives the real
+// resolveProductionFetcher -> ghCliFetch path with no network.
+test("digest CLI reports an incomplete sweep instead of printing nothing", async () => {
+  const home = await tmpHome();
+  await execFileAsync(process.execPath, [BIN, "init"], {
+    env: { ...process.env, AGENTMEM_HOME: home },
+  });
+  await writeFile(join(home, "reflections", "2026-08-06-07-15-00.md"), "# r\n");
+
+  const bin = await mkdtemp(join(tmpdir(), "agentmem-fakegh-"));
+  const ledger = "# Review findings ledger\n\n| #600 | Code | x | y |\n";
+  await writeFile(
+    join(bin, "gh"),
+    `#!/usr/bin/env bash\n` +
+      `if [ "$1" = "auth" ]; then exit 0; fi\n` +
+      `case "$2" in\n` +
+      `  */contents/*) printf '{"encoding":"base64","content":"%s"}\\n' ` +
+      `"${Buffer.from(ledger, "utf8").toString("base64")}" ;;\n` +
+      `  */pulls*) echo '[{"number":600,"title":"CAL-1: cited feature PR",` +
+      `"merged_at":"2026-08-01T00:00:00Z"}]' ;;\n` +
+      `esac\nexit 0\n`,
+    { mode: 0o755 },
+  );
+
+  const { stdout } = await execFileAsync(process.execPath, [BIN, "digest"], {
+    env: { ...process.env, AGENTMEM_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  assert.match(stdout, /600/, "name where the sweep stopped");
+  assert.match(stdout, /not checked|incomplete|stopped/i);
+});
+
+// Security review round 1, finding 3. `led.error` is execFile's message: the
+// full command line plus the child's ENTIRE stderr — whatever `gh` chose to
+// print. The digest file capped it at 160 chars; the CLI printed it raw to a
+// terminal, a launchd log, or the transcript of an agent that ran the command
+// inside a session. Mutation-checked: without the cap this test fails.
+test("a failing gh cannot dump its whole stderr to the CLI", async () => {
+  const home = await tmpHome();
+  await execFileAsync(process.execPath, [BIN, "init"], {
+    env: { ...process.env, AGENTMEM_HOME: home },
+  });
+
+  const bin = await mkdtemp(join(tmpdir(), "agentmem-badgh-"));
+  await writeFile(
+    join(bin, "gh"),
+    `#!/usr/bin/env bash\n` +
+      `if [ "$1" = "auth" ]; then exit 0; fi\n` +
+      `echo "gh: Not Found (HTTP 404)" >&2\n` +
+      `echo "hint: token loaded from /Users/victim/.config/gh/hosts.yml (ghp_AAAABBBBCCCCDDDD)" >&2\n` +
+      `printf 'padding %.0s' $(seq 1 400) >&2\n` +
+      `exit 1\n`,
+    { mode: 0o755 },
+  );
+
+  const { stdout } = await execFileAsync(process.execPath, [BIN, "digest"], {
+    env: { ...process.env, AGENTMEM_HOME: home, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  const line = stdout.split("\n").find((l) => l.includes("could not run")) ?? "";
+  assert.ok(line, "the failure is still reported");
+  assert.ok(line.length < 260, `the error line must be bounded, got ${line.length} chars`);
+  assert.doesNotMatch(stdout, /ghp_AAAABBBB/, "a token-shaped string must not survive the cap");
+  assert.doesNotMatch(stdout, /\/Users\/victim/, "nor an absolute path from deep in the stderr");
 });

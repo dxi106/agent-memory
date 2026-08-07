@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureLayout, paths, writeCandidate } from "../lib/storage.mjs";
-import { runDigest, readDeliveredDate } from "../lib/digest.mjs";
+import { runDigest, readDeliveredDate, localDay } from "../lib/digest.mjs";
 
 const execFileAsync = promisify(execFile);
 const HOOK = fileURLToPath(new URL("../adapters/claude-code/session-start.mjs", import.meta.url));
@@ -48,7 +48,13 @@ async function seedDigest(home, today) {
   return runDigest(home, { today });
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+// The production code stamps and names digests by the LOCAL day (localDay()).
+// This helper used `new Date().toISOString().slice(0, 10)` — the UTC day —
+// which agrees for 20 hours out of 24 and disagrees every evening after 20:00
+// US Eastern. Ten tests in this file went red at 20:01 EDT with no code change.
+// Same class as the HIGH fixed in step 4: the production path was corrected and
+// the tests were left on UTC.
+const today = () => localDay();
 
 // ---------------------------------------------------------------------------
 // R5 — the empty case. This ALREADY holds; it is a PIN, not red-first evidence.
@@ -295,4 +301,29 @@ test("a large digest survives the full hook path intact and is stamped", async (
   assert.match(ctx, /bulk-399/, "the tail of the digest must survive");
   assert.match(ctx, /<\/untrusted-data id="[a-f0-9]{16}">\n\n.*promote/s, "the closing delimiter must survive");
   assert.equal(await readDeliveredDate(home), t);
+});
+
+
+// Guard for the above. These helpers agreed with production for 20 hours a day,
+// so "they pass" was never evidence — ten of them went red at 20:01 EDT with no
+// code change. Under UTC+14 the local day is ahead of the UTC day for most of
+// the clock, so a hook or a helper that reverted to toISOString() looks for the
+// wrong filename and delivers nothing.
+const TZ = "Pacific/Kiritimati"; // UTC+14, no DST
+
+test("delivery works in a timezone where the local day differs from UTC", async () => {
+  const home = await tmpHome();
+  const day = new Date().toLocaleDateString("en-CA", { timeZone: TZ }); // YYYY-MM-DD
+  assert.match(day, /^\d{4}-\d{2}-\d{2}$/);
+  await seedDigest(home, day);
+
+  const child = execFileAsync("node", [HOOK], {
+    env: { ...process.env, AGENTMEM_HOME: home, TZ },
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  child.child.stdin.end(JSON.stringify({ cwd: "/tmp/some-repo" }));
+  const out = JSON.parse((await child).stdout);
+
+  assert.match(contextOf(out), /use-the-grep-tool/, "the digest must be found under the LOCAL day");
+  assert.equal(await readDeliveredDate(home), day, "and stamped with it");
 });
