@@ -6,6 +6,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { localDay } from "../lib/digest.mjs";
 import { writeCandidate } from "../lib/storage.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -627,7 +628,8 @@ test("digest lists pending candidates and writes the dated file", async () => {
   const { stdout } = await run(home, "digest", "--no-ledger");
   assert.match(stdout, /2026-08-01-use-the-grep-tool/);
 
-  const today = new Date().toISOString().slice(0, 10);
+  // localDay(), not the UTC day: runDigest names the file by the LOCAL day.
+  const today = localDay();
   const written = await readFile(join(home, "digest", `${today}.md`), "utf8");
   assert.match(written, /Use the Grep tool/);
 });

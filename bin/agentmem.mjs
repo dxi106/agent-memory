@@ -386,6 +386,22 @@ async function digest(rest) {
   }
 
   const result = await runDigest(home, opts);
+  const led = result.ledger;
+
+  // Reported BEFORE the no-file early return, not after. A failed check no
+  // longer forces a digest to be written (it would deliver a daily tooling
+  // complaint into every session), so on a machine with no credentials the
+  // early return was swallowing the only notice the operator would ever get —
+  // moving the false clean rather than removing it.
+  if (led?.error) {
+    // Flattened and capped exactly as render() does. Raw, this is execFile's
+    // message: the full command line plus the child's entire stderr, which is
+    // whatever `gh` decided to print — absolute paths and token-shaped strings
+    // included — echoed unbounded to a terminal, a launchd log, or the
+    // transcript of an agent that ran `agentmem digest` inside a session.
+    console.log(`digest: close-out check could not run — ${flattenField(String(led.error), 160)}`);
+    console.log("  fix: `gh auth login`, or set GITHUB_TOKEN. `--no-ledger` skips the check.");
+  }
 
   if (!result.file) {
     console.log("digest: nothing to do — no file written");
@@ -399,10 +415,7 @@ async function digest(rest) {
     console.log(`  ${c.meta.id} — ${flattenField(c.meta.title)}`);
   }
   if (result.items.length > 0) console.log(TRIAGE_INSTRUCTION);
-  const led = result.ledger;
-  if (led?.error) {
-    console.log(`digest: close-out check could not run — ${led.error}`);
-  } else if (led?.missing.length > 0) {
+  if (led && !led.error && led.missing.length > 0) {
     console.log(`digest: ${led.missing.length} merged PR(s) with no ledger close-out`);
     for (const pr of led.missing) {
       console.log(`  ${led.repo} #${pr.number} — ${flattenField(pr.title)}`);
