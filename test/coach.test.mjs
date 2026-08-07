@@ -1130,3 +1130,38 @@ test("the coaching log records how many proposals validation rejected", async ()
   assert.match(text, /- recs_rejected: 3$/m, `no rejected count in the log:\n${text}`);
   assert.match(text, /2026-08-07-dropped-1/, "the log must name what it dropped");
 });
+
+// KILLS: removing the cap on how many rejected ids are named. The failure
+// message is a single markdown list item and a single stderr line; a model
+// that proposes fifty bad ids must not produce a fifty-id line. The count is
+// still reported in full, so nothing is hidden — only the enumeration is
+// bounded.
+test("runCoachingPass caps how many rejected ids it names", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: Array.from({ length: 14 }, (_, n) => ({
+      id: `2026-08-07-dropped-${n}`,
+      title: "T", severity: "high", category: "anti_pattern",
+      body: "b", evidence: ["only one"], next_step: "s",
+    })),
+  }));
+
+  let err;
+  try {
+    await runCoachingPass({ home, client });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "expected the unaccounted guard to fire");
+  assert.match(err.message, /and 4 more/, `list was not capped: ${err.message}`);
+  assert.match(err.message, /proposed 14 recommendation/, "the true count must still be reported");
+  assert.equal(
+    [...err.message.matchAll(/2026-08-07-dropped-/g)].length,
+    10,
+    `expected exactly 10 ids named, got: ${err.message}`,
+  );
+});
