@@ -602,3 +602,55 @@ test("runReflection --dry-run writes no log when the response is truncated", asy
   await assert.rejects(() => runReflection({ home, client, dryRun: true }), (e) => e.kind === "truncated");
   assert.deepEqual(await readdir(paths(home).reflections), []);
 });
+
+// --- Review round 3 -------------------------------------------------------
+
+// KILLS: evaluating the accounted-for guard BEFORE the rescore loop, or leaving
+// rescored work out of the accounted-for sum.
+//
+// Rescore work is independent of candidate work. My round-1 guard threw before
+// the rescore loop ran, so a response carrying valid confidence updates
+// alongside rejected candidates lost the updates entirely — the guard against
+// throwing away the model's work was itself throwing away the model's work.
+// Confirmed by execution before this test was written: confidence stayed at
+// 0.5 while the run threw `unaccounted`. (Codex round 3.)
+test("runReflection applies valid rescores even when every candidate is rejected", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  await writeCandidate(home, {
+    meta: { id: "existing", title: "E", category: "code", confidence: 0.5, scope: { repos: ["*"] } },
+    body: "**Rule:** old.",
+  });
+  const { promoteCandidate } = await import("../lib/storage.mjs");
+  await promoteCandidate(home, "existing");
+
+  const client = fakeClient(async () => jsonContent({
+    candidates: [{ id: "../../etc/passwd", title: "a", category: "code", rule: "R" }],
+    rescore: [{ id: "existing", delta: "confirm" }],
+  }));
+
+  const result = await runReflection({ home, client });
+  assert.equal(result.rescored.length, 1, "the rescore must survive the candidate rejection");
+  const lesson = (await listLessons(home)).find((l) => l.meta.id === "existing");
+  assert.ok(lesson.meta.confidence > 0.5, `confidence was discarded: ${lesson.meta.confidence}`);
+  // The candidate rejection is not silent — it is on the record in the log.
+  const logs = await readdir(paths(home).reflections);
+  const text = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(text, /- candidates_rejected: 1$/m, `the rejection went unrecorded:\n${text}`);
+});
+
+// KILLS: widening the fix above into "never fail when rescore is present but
+// empty". A run whose candidates were all rejected AND which rescored nothing
+// produced nothing at all, and must still be loud. The paired control.
+test("runReflection still fails when candidates are all rejected and nothing was rescored", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({
+    candidates: [{ id: "../../etc/passwd", title: "a", category: "code", rule: "R" }],
+    rescore: [{ id: "no-such-lesson", delta: "confirm" }],
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unaccounted",
+  );
+});
