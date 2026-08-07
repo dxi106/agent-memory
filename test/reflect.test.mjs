@@ -166,20 +166,29 @@ test("runReflection --dry-run does not write candidates", async () => {
   assert.equal(cands.length, 0);
 });
 
+// A MIXED batch on purpose. This test's point is that one unsafe id is dropped
+// without taking the run down with it — so it must not also be an all-rejected
+// run, which is now a hard failure in its own right (see the accounted-for
+// guard below). Pairing the bad id with a good one keeps the original claim
+// intact and makes it stronger: the traversal id creates no file, and the
+// legitimate candidate beside it still lands.
 test("runReflection rejects candidate ids that look unsafe", async () => {
   const home = await tmpHome();
   await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "no" });
 
   const client = fakeClient(async () => jsonContent({
-    candidates: [{ id: "../../etc/passwd", title: "T", category: "code", rule: "R" }],
+    candidates: [
+      { id: "../../etc/passwd", title: "T", category: "code", rule: "R" },
+      { id: "2026-05-29-safe", title: "T", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+    ],
     rescore: [],
   }));
 
   const result = await runReflection({ home, client });
   // Sanitization should drop the bad candidate, not blow up
-  assert.equal(result.candidates.length, 0);
+  assert.equal(result.candidates.length, 1);
   const cands = await listCandidates(home);
-  assert.equal(cands.length, 0);
+  assert.deepEqual(cands.map((c) => c.meta.id), ["2026-05-29-safe"]);
 });
 
 test("runReflection collapses duplicate candidate ids within a single pass", async () => {
@@ -338,9 +347,12 @@ test("buildReflectionRequest honours reflection.max_output_tokens", async () => 
   assert.equal(req.max_tokens, 9001);
 });
 
-// KILLS: deleting the assertNotTruncated call in runReflection — without it a
-// truncated nightly reflect writes zero candidates and exits 0, exactly as
-// coach did on 2026-08-07.
+// KILLS: deleting the assertNotTruncated call in runReflection. As in the coach
+// case, the run still fails without it — this payload is unreadable either way —
+// but it reports "unparseable" instead of "truncated", and the assertion below
+// requires the latter. The mutation dies on the `kind` predicate, not on the
+// pass succeeding. Naming the cause correctly is the behaviour under test:
+// a budget problem and a model problem have different fixes.
 test("runReflection rejects a response truncated at the output cap", async () => {
   const home = await tmpHome();
   await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
@@ -482,4 +494,67 @@ test("the prompt states the same cap the code enforces", async () => {
     maxCandidates: 3,
   });
   assert.match(req.system[0].text, /at most 3/i, "prompt and code must not drift apart");
+});
+
+// --- Review round 1: reflect needs coach's fail-closed guard too ------------
+// The accounted-for check went into runCoachingPass and NOT runReflection, even
+// though the PR claimed to fix the class in both passes. reflect is the
+// *nightly* unattended job — the more exposed of the two. (Code review, HIGH.)
+
+// KILLS: omitting the accounted-for guard from runReflection. Without it, a run
+// where sanitizeCandidate rejects EVERY candidate writes nothing and returns
+// { candidates: [] } with exit 0 — the SOU-40 user-visible outcome reached by a
+// different trigger.
+test("runReflection rejects a run where every proposed candidate is dropped", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  // Unsafe ids: sanitizeCandidate turns every one of these away.
+  const client = fakeClient(async () => jsonContent({
+    candidates: [
+      { id: "../../etc/passwd", title: "a", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+      { id: "also bad!", title: "b", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+    ],
+    rescore: [],
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unaccounted",
+  );
+  assert.deepEqual(await listCandidates(home), []);
+});
+
+// KILLS: dropping the duplicate-skip count from reflect's accounted-for sum. A
+// run whose every candidate is already on file is a legitimate quiet success —
+// the reason was recorded — and must NOT be turned into a hard failure. This is
+// the control that proves the guard above is not a flag-everything detector.
+test("runReflection succeeds when every candidate is skipped as an existing duplicate", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  await writeCandidate(home, {
+    meta: { id: "seen-before", title: "x", category: "code", confidence: 0.35, scope: { repos: ["*"] } },
+    body: "**Rule:** seeded.",
+  });
+  const client = fakeClient(async () => jsonContent({
+    candidates: [
+      { id: "seen-before", title: "x", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+    ],
+    rescore: [],
+  }));
+  const result = await runReflection({ home, client });
+  assert.equal(result.skipped, false);
+  assert.deepEqual(result.candidates, []);
+  assert.equal((await listCandidates(home)).length, 1, "the seeded candidate is untouched");
+});
+
+// KILLS: firing reflect's accounted-for guard on a run that hit the per-run cap.
+// The cap is a recorded reason, and candidates were written, so the run stands.
+test("runReflection succeeds when the per-run cap is what stopped it", async () => {
+  const home = await tmpHome();
+  await writeFile(join(home, "config.json"), JSON.stringify({
+    reflection: { lookback_days: 7, min_signals_to_reflect: 1, max_candidates_per_run: 2 },
+  }));
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({ candidates: nCandidates(5), rescore: [] }));
+  const result = await runReflection({ home, client });
+  assert.equal(result.candidates.length, 2);
 });

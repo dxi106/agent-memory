@@ -138,3 +138,91 @@ test("DEFAULT_MAX_OUTPUT_TOKENS leaves real headroom above the cap that truncate
     `expected more than the 4096 cap that truncated the 2026-08-07 run, got ${DEFAULT_MAX_OUTPUT_TOKENS}`,
   );
 });
+
+// --- Review round 1 -------------------------------------------------------
+// Three findings from the code/security/Codex reviews of b8cc53a. Each test
+// below pins the fix and names the mutation that would undo it.
+
+// KILLS: dropping the `stop_reason` completeness check from isTruncated, so the
+// `output_tokens >= cap` fallback fires even when the API has explicitly said
+// the response ENDED. A model whose finished answer lands exactly on the budget
+// would then be rejected as truncated and the whole run would hard-fail —
+// turning a good run into a failed one. (Codex review, P2.)
+test("isTruncated trusts an explicit non-truncating stop_reason at the exact cap", () => {
+  for (const reason of ["end_turn", "stop_sequence", "tool_use"]) {
+    assert.equal(
+      isTruncated({ stop_reason: reason, usage: { output_tokens: 4096 } }, 4096),
+      false,
+      `stop_reason=${reason} says the model finished; the token count must not override it`,
+    );
+  }
+});
+
+// KILLS: making the above so permissive that the fallback stops working. The
+// fallback exists for responses that carry NO stop_reason, which is the shape
+// the 2026-08-07 payload presented. This is the paired control.
+test("isTruncated still catches a cap-length response that carries no stop_reason", () => {
+  assert.equal(isTruncated({ usage: { output_tokens: 4096 } }, 4096), true);
+  assert.equal(isTruncated({ stop_reason: null, usage: { output_tokens: 4096 } }, 4096), true);
+});
+
+// KILLS: interpolating V8's JSON.parse error into the thrown message. V8 quotes
+// the first ~10 characters of the input VERBATIM when the parse fails at
+// position 0 — the common case, where the model emitted prose. That message now
+// reaches stderr and, under launchd, /tmp/agentmem.coach.err.log (mode 0644 in a
+// world-readable directory). The raw output belongs in the run log, not there.
+// (Security review, LOW-blocking under the data-exposure carve-out.)
+test("parseModelJson does not echo the model's own text into the thrown message", () => {
+  const private_ = "Ada Lovelace's transcript: ada@example.com said the quiet part";
+  assert.throws(
+    () => parseModelJson(private_, "coaching"),
+    (e) => {
+      assert.ok(
+        !/Ada|Lovelace|example\.com|quiet part/.test(e.message),
+        `the model's text leaked into the message: ${e.message}`,
+      );
+      return e instanceof ModelOutputError && e.kind === "unparseable";
+    },
+  );
+});
+
+// KILLS: re-attaching the raw payload to the error object. `raw` was an own
+// enumerable property holding up to ~64KB of transcript-derived text, which
+// console.error(err) / util.inspect(err) / JSON.stringify(err) all serialize.
+// No consumer ever read it. (Security review — latent, not live, but the fix is
+// a deletion.)
+test("a ModelOutputError does not carry the raw payload on the error object", async () => {
+  const { inspect } = await import("node:util");
+  const private_ = "PRIVATE-TRANSCRIPT-MARKER not json at all";
+  let err;
+  try {
+    parseModelJson(private_, "coaching");
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "expected a throw");
+  assert.ok(!("raw" in err), "the error must not retain the payload");
+  assert.ok(!inspect(err).includes("PRIVATE-TRANSCRIPT-MARKER"), "inspect() leaked the payload");
+  assert.ok(!JSON.stringify(err).includes("PRIVATE-TRANSCRIPT-MARKER"), "JSON leaked the payload");
+});
+
+// KILLS: replacing the linear first-`{`..last-`}` slice with something that
+// changes which span is recovered. This pins the SEMANTICS the greedy regex had,
+// so the swap to a linear scan (which removes its quadratic backtracking on
+// unbalanced input) is provably behaviour-preserving.
+test("parseModelJson recovers the span from the first brace to the last", () => {
+  const parsed = parseModelJson('preamble {"a": {"b": 1}} trailer', "coaching");
+  assert.deepEqual(parsed, { a: { b: 1 } });
+});
+
+// KILLS: the pathological input for the old greedy regex — many opening braces
+// and no closing one, which backtracked quadratically (measured 6.5s at 128KB).
+// A linear scan bails immediately. The assertion is on the OUTCOME, not the
+// clock, so it is not timing-flaky.
+test("parseModelJson rejects a large unbalanced payload instead of chewing on it", () => {
+  const pathological = "{".repeat(50_000);
+  assert.throws(
+    () => parseModelJson(pathological, "coaching"),
+    (e) => e instanceof ModelOutputError && e.kind === "unparseable",
+  );
+});
