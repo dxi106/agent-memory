@@ -166,20 +166,29 @@ test("runReflection --dry-run does not write candidates", async () => {
   assert.equal(cands.length, 0);
 });
 
+// A MIXED batch on purpose. This test's point is that one unsafe id is dropped
+// without taking the run down with it — so it must not also be an all-rejected
+// run, which is now a hard failure in its own right (see the accounted-for
+// guard below). Pairing the bad id with a good one keeps the original claim
+// intact and makes it stronger: the traversal id creates no file, and the
+// legitimate candidate beside it still lands.
 test("runReflection rejects candidate ids that look unsafe", async () => {
   const home = await tmpHome();
   await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "no" });
 
   const client = fakeClient(async () => jsonContent({
-    candidates: [{ id: "../../etc/passwd", title: "T", category: "code", rule: "R" }],
+    candidates: [
+      { id: "../../etc/passwd", title: "T", category: "code", rule: "R" },
+      { id: "2026-05-29-safe", title: "T", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+    ],
     rescore: [],
   }));
 
   const result = await runReflection({ home, client });
   // Sanitization should drop the bad candidate, not blow up
-  assert.equal(result.candidates.length, 0);
+  assert.equal(result.candidates.length, 1);
   const cands = await listCandidates(home);
-  assert.equal(cands.length, 0);
+  assert.deepEqual(cands.map((c) => c.meta.id), ["2026-05-29-safe"]);
 });
 
 test("runReflection collapses duplicate candidate ids within a single pass", async () => {
@@ -319,6 +328,72 @@ test("buildReflectionRequest places stable context first and adds cache breakpoi
   assert.equal(last.cache_control?.type, "ephemeral");
 });
 
+// --- SOU-40: reflect shares coach's silent-truncation defect ---------------
+// reflect.mjs carried the same hardcoded max_tokens: 4096 and the same
+// `tryParseJson(raw) || {}` swallow. It has stayed under the cap only because
+// SOU-31 capped candidates at 3 per run — protected by accident, not design.
+
+// KILLS: reverting buildReflectionRequest's max_tokens to the hardcoded 4096.
+test("buildReflectionRequest asks for more output than the 4096 cap that truncated coach", async () => {
+  const home = await tmpHome();
+  const req = await buildReflectionRequest({ home, signals: [] });
+  assert.ok(req.max_tokens > 4096, `expected > 4096, got ${req.max_tokens}`);
+});
+
+// KILLS: ignoring reflection.max_output_tokens.
+test("buildReflectionRequest honours reflection.max_output_tokens", async () => {
+  const home = await tmpHome();
+  const req = await buildReflectionRequest({ home, signals: [], maxOutputTokens: 9001 });
+  assert.equal(req.max_tokens, 9001);
+});
+
+// KILLS: deleting the assertNotTruncated call in runReflection. As in the coach
+// case, the run still fails without it — this payload is unreadable either way —
+// but it reports "unparseable" instead of "truncated", and the assertion below
+// requires the latter. The mutation dies on the `kind` predicate, not on the
+// pass succeeding. Naming the cause correctly is the behaviour under test:
+// a budget problem and a model problem have different fixes.
+test("runReflection rejects a response truncated at the output cap", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async (req) => ({
+    content: [{ type: "text", text: '{"candidates": [{"id": "a", "categ' }],
+    usage: { input_tokens: 5000, output_tokens: req.max_tokens },
+    stop_reason: "max_tokens",
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "truncated",
+  );
+  assert.deepEqual(await listCandidates(home), []);
+});
+
+// KILLS: restoring `tryParseJson(raw) || {}` in runReflection.
+test("runReflection rejects unparseable output rather than writing zero candidates", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => ({
+    content: [{ type: "text", text: "I could not comply with that request." }],
+    usage: { input_tokens: 5000, output_tokens: 12 },
+    stop_reason: "end_turn",
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unparseable",
+  );
+});
+
+// KILLS: making the guards above fire on a valid, empty reflection — the
+// control that proves they are not flag-everything detectors.
+test("runReflection succeeds when the model validly proposes no candidates", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({ candidates: [], rescore: [] }));
+  const result = await runReflection({ home, client });
+  assert.equal(result.skipped, false);
+  assert.deepEqual(result.candidates, []);
+});
+
 // --- SOU-31: the reflection pass must not flood the candidate queue ---------
 // Measured 2026-08-05: ~9.7 candidates proposed per nightly run (max 18), from
 // a prompt with no cap. The cap has to hold in CODE, because a prompt
@@ -419,4 +494,163 @@ test("the prompt states the same cap the code enforces", async () => {
     maxCandidates: 3,
   });
   assert.match(req.system[0].text, /at most 3/i, "prompt and code must not drift apart");
+});
+
+// --- Review round 1: reflect needs coach's fail-closed guard too ------------
+// The accounted-for check went into runCoachingPass and NOT runReflection, even
+// though the PR claimed to fix the class in both passes. reflect is the
+// *nightly* unattended job — the more exposed of the two. (Code review, HIGH.)
+
+// KILLS: omitting the accounted-for guard from runReflection. Without it, a run
+// where sanitizeCandidate rejects EVERY candidate writes nothing and returns
+// { candidates: [] } with exit 0 — the SOU-40 user-visible outcome reached by a
+// different trigger.
+test("runReflection rejects a run where every proposed candidate is dropped", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  // Unsafe ids: sanitizeCandidate turns every one of these away.
+  const client = fakeClient(async () => jsonContent({
+    candidates: [
+      { id: "../../etc/passwd", title: "a", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+      { id: "also bad!", title: "b", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+    ],
+    rescore: [],
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unaccounted",
+  );
+  assert.deepEqual(await listCandidates(home), []);
+});
+
+// KILLS: dropping the duplicate-skip count from reflect's accounted-for sum. A
+// run whose every candidate is already on file is a legitimate quiet success —
+// the reason was recorded — and must NOT be turned into a hard failure. This is
+// the control that proves the guard above is not a flag-everything detector.
+test("runReflection succeeds when every candidate is skipped as an existing duplicate", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  await writeCandidate(home, {
+    meta: { id: "seen-before", title: "x", category: "code", confidence: 0.35, scope: { repos: ["*"] } },
+    body: "**Rule:** seeded.",
+  });
+  const client = fakeClient(async () => jsonContent({
+    candidates: [
+      { id: "seen-before", title: "x", category: "code", rule: "**Rule:** r.", why: "**Why:** w." },
+    ],
+    rescore: [],
+  }));
+  const result = await runReflection({ home, client });
+  assert.equal(result.skipped, false);
+  assert.deepEqual(result.candidates, []);
+  assert.equal((await listCandidates(home)).length, 1, "the seeded candidate is untouched");
+});
+
+// KILLS: dropping the cap-skip count from reflect's accounted-for sum.
+//
+// The cap must be ZERO for this to bite. With any positive cap some candidates
+// are written, so `accountedFor` is non-zero via candidates.length whether or
+// not skippedCapped is counted — the first version of this test used a cap of 2
+// and pinned nothing at all. A cap of 0 is the only shape where skippedCapped is
+// the SOLE reason the run is accounted for, and it is a real configuration:
+// "propose nothing this run". (Code review round 2 caught the earlier version.)
+test("runReflection succeeds when the per-run cap is the only thing accounting for the run", async () => {
+  const home = await tmpHome();
+  await writeFile(join(home, "config.json"), JSON.stringify({
+    reflection: { lookback_days: 7, min_signals_to_reflect: 1, max_candidates_per_run: 0 },
+  }));
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({ candidates: nCandidates(5), rescore: [] }));
+  const result = await runReflection({ home, client });
+  assert.equal(result.candidates.length, 0);
+  assert.deepEqual(await listCandidates(home), []);
+});
+
+// --- Review round 2 -------------------------------------------------------
+
+// KILLS: writing a reflection log from the failure paths under --dry-run.
+// A dry run promises no side effects, and coach's failRun already guards on
+// !dryRun — reflect did not, so `agentmem reflect --dry-run` on a failing run
+// dropped a file containing transcript-derived model output into the store.
+// (Security review round 2, LOW.)
+test("runReflection --dry-run writes no log even when the run fails", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({
+    candidates: [{ id: "../../etc/passwd", title: "a", category: "code", rule: "R" }],
+    rescore: [],
+  }));
+
+  await assert.rejects(
+    () => runReflection({ home, client, dryRun: true }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unaccounted",
+  );
+  assert.deepEqual(await readdir(paths(home).reflections), [], "a dry run must leave nothing behind");
+});
+
+// KILLS: the same omission on the truncated/unparseable failure path, which
+// predates the accounted-for guard and had the identical shape.
+test("runReflection --dry-run writes no log when the response is truncated", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async (req) => ({
+    content: [{ type: "text", text: '{"candidates": [{"id": "a", "categ' }],
+    usage: { input_tokens: 5000, output_tokens: req.max_tokens },
+    stop_reason: "max_tokens",
+  }));
+
+  await assert.rejects(() => runReflection({ home, client, dryRun: true }), (e) => e.kind === "truncated");
+  assert.deepEqual(await readdir(paths(home).reflections), []);
+});
+
+// --- Review round 3 -------------------------------------------------------
+
+// KILLS: evaluating the accounted-for guard BEFORE the rescore loop, or leaving
+// rescored work out of the accounted-for sum.
+//
+// Rescore work is independent of candidate work. My round-1 guard threw before
+// the rescore loop ran, so a response carrying valid confidence updates
+// alongside rejected candidates lost the updates entirely — the guard against
+// throwing away the model's work was itself throwing away the model's work.
+// Confirmed by execution before this test was written: confidence stayed at
+// 0.5 while the run threw `unaccounted`. (Codex round 3.)
+test("runReflection applies valid rescores even when every candidate is rejected", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  await writeCandidate(home, {
+    meta: { id: "existing", title: "E", category: "code", confidence: 0.5, scope: { repos: ["*"] } },
+    body: "**Rule:** old.",
+  });
+  const { promoteCandidate } = await import("../lib/storage.mjs");
+  await promoteCandidate(home, "existing");
+
+  const client = fakeClient(async () => jsonContent({
+    candidates: [{ id: "../../etc/passwd", title: "a", category: "code", rule: "R" }],
+    rescore: [{ id: "existing", delta: "confirm" }],
+  }));
+
+  const result = await runReflection({ home, client });
+  assert.equal(result.rescored.length, 1, "the rescore must survive the candidate rejection");
+  const lesson = (await listLessons(home)).find((l) => l.meta.id === "existing");
+  assert.ok(lesson.meta.confidence > 0.5, `confidence was discarded: ${lesson.meta.confidence}`);
+  // The candidate rejection is not silent — it is on the record in the log.
+  const logs = await readdir(paths(home).reflections);
+  const text = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(text, /- candidates_rejected: 1$/m, `the rejection went unrecorded:\n${text}`);
+});
+
+// KILLS: widening the fix above into "never fail when rescore is present but
+// empty". A run whose candidates were all rejected AND which rescored nothing
+// produced nothing at all, and must still be loud. The paired control.
+test("runReflection still fails when candidates are all rejected and nothing was rescored", async () => {
+  const home = await tmpHome();
+  await appendSignal(paths(home).signals, { host: "claude-code", type: "correction", summary: "x" });
+  const client = fakeClient(async () => jsonContent({
+    candidates: [{ id: "../../etc/passwd", title: "a", category: "code", rule: "R" }],
+    rescore: [{ id: "no-such-lesson", delta: "confirm" }],
+  }));
+  await assert.rejects(
+    () => runReflection({ home, client }),
+    (e) => e.name === "ModelOutputError" && e.kind === "unaccounted",
+  );
 });

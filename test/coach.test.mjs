@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, readdir, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ModelOutputError } from "../lib/model-output.mjs";
 import { ensureLayout, paths } from "../lib/storage.mjs";
 import { appendSignal } from "../lib/signals.mjs";
 import {
@@ -20,6 +22,8 @@ import {
   isDismissed,
   isSnoozed,
 } from "../lib/coach.mjs";
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 
 async function tmpHome() {
   const home = await mkdtemp(join(tmpdir(), "agentmem-coach-"));
@@ -223,10 +227,67 @@ test("parseCoachResponse drops recommendations with unsafe ids", () => {
   assert.equal(out.recommendations.length, 0);
 });
 
-test("parseCoachResponse returns empty list for unparseable input", () => {
-  assert.deepEqual(parseCoachResponse("not json at all").recommendations, []);
-  assert.deepEqual(parseCoachResponse("").recommendations, []);
+// SOU-40. This test used to assert the defect: unparseable input reported
+// "zero recommendations", which is indistinguishable from a model that had
+// nothing to say. On 2026-08-07 that conflation threw away seven real
+// recommendations and exited 0.
+//
+// KILLS: restoring the bare `return null` in either catch block of
+// tryParseJson, or the `|| {}` that swallowed it in parseCoachResponse.
+test("parseCoachResponse throws on unparseable output rather than reporting zero recs", () => {
+  assert.throws(
+    () => parseCoachResponse("not json at all"),
+    (e) => e instanceof ModelOutputError && e.kind === "unparseable",
+  );
+  assert.throws(() => parseCoachResponse(""), ModelOutputError);
 });
+
+// KILLS: conflating in the other direction — a model that legitimately
+// proposes nothing must NOT be an error. This is the control that stops the
+// test above from being satisfied by "throw on everything".
+test("parseCoachResponse returns an empty list when the model validly proposes nothing", () => {
+  assert.deepEqual(parseCoachResponse(JSON.stringify({ recommendations: [] })).recommendations, []);
+});
+
+// KILLS: any regression that lets the real SOU-40 truncation shape parse as
+// an empty result. The fixture carries the exact failure geometry of the
+// 2026-08-07 payload: six complete recommendations, a seventh cut mid-string.
+test("parseCoachResponse throws on the truncated payload shape that caused SOU-40", async () => {
+  const raw = await readFile(join(FIXTURES, "coach-truncated-response.txt"), "utf8");
+  assert.throws(() => parseCoachResponse(raw), (e) => e.kind === "unparseable");
+});
+
+// The genuine 2026-08-07 payload, not a stand-in. It is deliberately NOT
+// committed — this repo is the public engine and `reflections/` is gitignored
+// live data — so this test runs only where that payload exists (Dan's box)
+// and skips elsewhere. See test/fixtures/coach-truncated-response.txt for the
+// committed structural equivalent.
+test("the real 2026-08-07 coach payload is rejected, not read as zero recommendations", async (t) => {
+  const home = process.env.AGENTMEM_HOME
+    || join(process.env.HOME || "", "Documents", "code", "agent-memory");
+  const file = join(home, "reflections", "coach-2026-08-07-15-26-19.md");
+  let log;
+  try {
+    log = await readFile(file, "utf8");
+  } catch {
+    t.skip(`real payload not present at ${file}`);
+    return;
+  }
+  const raw = extractRawModelOutput(log);
+  assert.equal([...raw.matchAll(/"id":\s*"([^"]+)"/g)].length, 7, "expected 7 recs in the real payload");
+  assert.throws(() => parseCoachResponse(raw), (e) => e.kind === "unparseable");
+});
+
+// Pull the fenced "## Raw model output" block back out of a coach log.
+function extractRawModelOutput(log) {
+  const lines = log.split("\n");
+  const header = lines.indexOf("## Raw model output");
+  assert.notEqual(header, -1, "coach log has no raw-output section");
+  const open = header + 2; // blank line, then the opening fence
+  let close = lines.length - 1;
+  while (close > open && lines[close].trim() !== "```") close -= 1;
+  return lines.slice(open + 1, close).join("\n");
+}
 
 // ------ writeRecommendation ------
 
@@ -375,6 +436,153 @@ test("runCoachingPass writes recommendations and a log when the model returns re
   const logs = await readdir(paths(home).reflections);
   const coachLogs = logs.filter((f) => f.startsWith("coach-"));
   assert.equal(coachLogs.length, 1);
+});
+
+// ------ SOU-40: a run that produces nothing must say so loudly ------
+
+// Reproduce the 2026-08-07 run end to end: a paid call whose output was cut
+// at the token cap. Before this ticket that printed
+// "coach: wrote 0 recommendation(s)" and exited 0.
+//
+// KILLS: deleting the assertNotTruncated call in runCoachingPass. The run
+// still fails without it — parseModelJson cannot read this payload either —
+// but it fails as "unparseable", and the assertion below requires "truncated".
+// That distinction is the point: the operator's fix differs (raise the cap vs.
+// investigate the model), so a run that died of a full budget must say so. The
+// mutation is caught by the `kind` predicate, NOT by the pass resolving.
+test("runCoachingPass rejects a response truncated at the output cap", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const truncated = await readFile(join(FIXTURES, "coach-truncated-response.txt"), "utf8");
+  let cap = null;
+  const client = fakeClient(async (req) => {
+    cap = req.max_tokens;
+    return {
+      content: [{ type: "text", text: truncated }],
+      // The exact signature of the live failure: output_tokens === max_tokens.
+      usage: { input_tokens: 84638, output_tokens: req.max_tokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 7478 },
+      stop_reason: "max_tokens",
+    };
+  });
+
+  await assert.rejects(
+    () => runCoachingPass({ home, client }),
+    (e) => e instanceof ModelOutputError
+      && e.kind === "truncated"
+      && new RegExp(String(cap)).test(e.message),
+  );
+
+  // Nothing may be written from a truncated run...
+  assert.deepEqual(await listRecommendations(home), []);
+  // ...but the raw output must survive on disk, or the failure is undiagnosable.
+  const logs = (await readdir(paths(home).reflections)).filter((f) => f.startsWith("coach-"));
+  assert.equal(logs.length, 1);
+  const logText = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(logText, /truncated/i);
+  assert.match(logText, /2026-08-07-synthetic-recommendation-1/);
+});
+
+// The second silent-loss path: output that parses fine, but every proposed
+// recommendation is dropped by validation. Same user-visible outcome as
+// SOU-40 — a paid run that writes nothing and exits 0.
+//
+// KILLS: deleting the accounted-for assertion. Without it a 0-of-7 run
+// resolves successfully with recommendations: [].
+test("runCoachingPass rejects a run where every proposed recommendation is dropped", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  // min_evidence_per_recommendation is 2 in tmpHome(); one entry each fails.
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+      id: `2026-08-07-dropped-${n}`,
+      title: `T${n}`,
+      severity: "high",
+      category: "anti_pattern",
+      body: "b",
+      evidence: ["only one"],
+      next_step: "s",
+    })),
+  }));
+
+  await assert.rejects(
+    () => runCoachingPass({ home, client }),
+    (e) => e instanceof ModelOutputError
+      && e.kind === "unaccounted"
+      && /7/.test(e.message),
+  );
+  assert.deepEqual(await listRecommendations(home), []);
+});
+
+// KILLS: making the accounted-for check fire whenever nothing is written.
+// A model with nothing to say is a legitimate, successful, quiet run — and if
+// this can't pass, the check above is a flag-everything detector.
+test("runCoachingPass succeeds quietly when the model validly proposes nothing", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const client = fakeClient(async () => jsonResponse({ recommendations: [] }));
+  const result = await runCoachingPass({ home, client });
+  assert.equal(result.skipped, false);
+  assert.deepEqual(result.recommendations, []);
+});
+
+// KILLS: dropping `skippedExisting` (or any other bucket) from the
+// accounted-for sum. Every proposal here is already on file, so the run is
+// fully accounted for and must stay a success — an accounting that misses a
+// bucket would raise a false alarm on an ordinary quiet week.
+//
+// Note the mutation this does NOT kill: removing the `proposed > 0` guard
+// leaves this test green, because accountedFor is 1 here, not 0. The test
+// above ("succeeds quietly...") is what kills that one.
+test("runCoachingPass succeeds when every proposal is skipped for a recorded reason", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const rec = {
+    id: "2026-08-07-already-here",
+    title: "T",
+    severity: "high",
+    category: "anti_pattern",
+    body: "b",
+    evidence: ["one", "two"],
+    next_step: "s",
+  };
+  await writeRecommendation(home, rec);
+  const client = fakeClient(async () => jsonResponse({ recommendations: [rec] }));
+  const result = await runCoachingPass({ home, client });
+  assert.equal(result.recommendations.length, 0);
+  assert.equal(result.skippedExisting, 1);
+});
+
+// KILLS: reverting max_tokens to the hardcoded 4096 that truncated the
+// 2026-08-07 run at exactly the cap.
+test("buildCoachingPrompt asks for more output than the 4096 cap that truncated SOU-40", () => {
+  const req = buildCoachingPrompt({
+    signals: [], lessons: [], knowledge: { features: [], bestPractices: [], antiPatterns: [] },
+    usageStats: collectUsageStats([]),
+  });
+  assert.ok(req.max_tokens > 4096, `expected > 4096, got ${req.max_tokens}`);
+});
+
+// KILLS: ignoring coaching.max_output_tokens, which is the operator's only
+// lever if the cap ever bites again.
+test("buildCoachingPrompt honours coaching.max_output_tokens from config", () => {
+  const req = buildCoachingPrompt({
+    signals: [], lessons: [], knowledge: { features: [], bestPractices: [], antiPatterns: [] },
+    usageStats: collectUsageStats([]),
+    config: { max_output_tokens: 9001 },
+  });
+  assert.equal(req.max_tokens, 9001);
 });
 
 test("runCoachingPass --dry-run does not write recs or log", async () => {
@@ -826,4 +1034,181 @@ test("weeklyDigest writes a digest file under recommendations/weekly/", async ()
   assert.match(text, /Weekly recommendations/i);
   assert.match(text, /T1/);
   assert.match(text, /T2/);
+});
+
+// --- Review round 1 -------------------------------------------------------
+
+// KILLS: joining `parsed.rejected` raw into the unaccounted failure message.
+// Those ids are model-controlled text, captured precisely in the case where the
+// id FAILED validation — so they may carry newlines, code fences and arbitrary
+// length. The message lands in the markdown run log as a single `- failure:`
+// line and on stderr (under launchd, world-readable /tmp), where an id
+// containing a fence plus a "## Raw model output" header forges a whole section
+// ahead of the real one. This repo already applies flattenField() at seven
+// sites for exactly this hazard. (Security review, MEDIUM — demonstrated.)
+test("runCoachingPass flattens model-controlled ids out of its failure message", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const forged = 'x\n```\n\n## Raw model output\n\n```\nFORGED-SECTION-MARKER';
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: [{
+      id: forged,
+      title: "T", severity: "high", category: "anti_pattern",
+      body: "b", evidence: ["only one"], next_step: "s",
+    }, {
+      id: "y".repeat(50_000),
+      title: "T", severity: "high", category: "anti_pattern",
+      body: "b", evidence: ["only one"], next_step: "s",
+    }],
+  }));
+
+  let err;
+  try {
+    await runCoachingPass({ home, client });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "expected the unaccounted guard to fire");
+  // The property is structural, not content-level: the id's text may still be
+  // quoted back — that is its diagnostic value — but it must not be able to
+  // ACT as markup. A newline is what lets a fence open a block, so these
+  // together are what defeat the forgery.
+  assert.ok(!err.message.includes("\n"), "a newline in the message breaks the log line and stderr");
+  assert.ok(!err.message.includes("```"), "a fence in the message can forge a log section");
+  assert.ok(!err.message.includes("## "), "a heading marker can forge a log section");
+  assert.ok(err.message.length < 2000, `unbounded message: ${err.message.length} chars`);
+
+  // And the run log's metadata region — everything ahead of the real raw-output
+  // header — must still be nothing but `- key: value` lines. That region is
+  // exactly where the demonstrated attack planted its forged section.
+  const logs = (await readdir(paths(home).reflections)).filter((f) => f.startsWith("coach-"));
+  const text = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  const lines = text.split("\n");
+  const realHeader = lines.indexOf("## Raw model output");
+  assert.notEqual(realHeader, -1, "the log lost its raw-output section entirely");
+  const metadata = lines.slice(0, realHeader);
+  assert.deepEqual(
+    metadata.filter((l) => l.startsWith("#") && l !== `# Coaching pass ${logs[0].slice(6, -3)}`),
+    [],
+    `a forged heading appeared ahead of the real one:\n${metadata.join("\n")}`,
+  );
+  assert.deepEqual(metadata.filter((l) => l.includes("```")), [], "a forged fence opened early");
+});
+
+// KILLS: omitting the rejected count from the SUCCESS-path coaching log. A
+// partial loss — 7 proposed, 1 written, 6 turned away by validation — has
+// accountedFor === 1, so the fail-closed guard correctly does not fire, and
+// before this the run left no record at all that six were dropped. That is the
+// same silent-loss class the ticket exists to close, for the M-of-N case.
+// (Code review, MEDIUM.)
+test("the coaching log records how many proposals validation rejected", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const good = {
+    id: "2026-08-07-kept", title: "T", severity: "high", category: "anti_pattern",
+    body: "b", evidence: ["one", "two"], next_step: "s",
+  };
+  const bad = (n) => ({
+    id: `2026-08-07-dropped-${n}`, title: "T", severity: "high", category: "anti_pattern",
+    body: "b", evidence: ["only one"], next_step: "s",
+  });
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: [good, bad(1), bad(2), bad(3)],
+  }));
+
+  const result = await runCoachingPass({ home, client });
+  assert.equal(result.recommendations.length, 1);
+
+  const logs = (await readdir(paths(home).reflections)).filter((f) => f.startsWith("coach-"));
+  const text = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(text, /- recs_rejected: 3$/m, `no rejected count in the log:\n${text}`);
+  assert.match(text, /2026-08-07-dropped-1/, "the log must name what it dropped");
+});
+
+// KILLS: removing the cap on how many rejected ids are named. The failure
+// message is a single markdown list item and a single stderr line; a model
+// that proposes fifty bad ids must not produce a fifty-id line. The count is
+// still reported in full, so nothing is hidden — only the enumeration is
+// bounded.
+test("runCoachingPass caps how many rejected ids it names", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: Array.from({ length: 14 }, (_, n) => ({
+      id: `2026-08-07-dropped-${n}`,
+      title: "T", severity: "high", category: "anti_pattern",
+      body: "b", evidence: ["only one"], next_step: "s",
+    })),
+  }));
+
+  let err;
+  try {
+    await runCoachingPass({ home, client });
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, "expected the unaccounted guard to fire");
+  assert.match(err.message, /and 4 more/, `list was not capped: ${err.message}`);
+  assert.match(err.message, /proposed 14 recommendation/, "the true count must still be reported");
+  assert.equal(
+    [...err.message.matchAll(/2026-08-07-dropped-/g)].length,
+    10,
+    `expected exactly 10 ids named, got: ${err.message}`,
+  );
+});
+
+// KILLS: accepting a top-level array in the real coach path. End-to-end
+// companion to the parseModelJson unit test — proves the silent zero this
+// reintroduces is caught by the pass, not just by the parser.
+test("runCoachingPass rejects an array-shaped response instead of writing zero", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  // Two perfectly valid recommendations — just missing the object wrapper.
+  const client = fakeClient(async () => jsonResponse([1, 2].map((n) => ({
+    id: `2026-08-07-real-${n}`,
+    title: "T", severity: "high", category: "anti_pattern",
+    body: "b", evidence: ["one", "two"], next_step: "s",
+  }))));
+
+  await assert.rejects(
+    () => runCoachingPass({ home, client }),
+    (e) => e instanceof ModelOutputError && e.kind === "unparseable",
+  );
+  assert.deepEqual(await listRecommendations(home), []);
+});
+
+// KILLS: dropping `rejected` from the counts failRun forwards. The failure log
+// otherwise records `- recs_rejected: 0` on the very run whose `- failure:`
+// line names every rejected id — a forensic record that contradicts itself.
+test("the coaching failure log's rejected count matches the ids it names", async () => {
+  const home = await tmpHome();
+  await seedKnowledge(home);
+  await appendSignal(paths(home).signals, {
+    host: "claude-code", type: "correction", summary: "x",
+  });
+  const client = fakeClient(async () => jsonResponse({
+    recommendations: [1, 2, 3].map((n) => ({
+      id: `2026-08-07-dropped-${n}`,
+      title: "T", severity: "high", category: "anti_pattern",
+      body: "b", evidence: ["only one"], next_step: "s",
+    })),
+  }));
+
+  await assert.rejects(() => runCoachingPass({ home, client }), (e) => e.kind === "unaccounted");
+
+  const logs = (await readdir(paths(home).reflections)).filter((f) => f.startsWith("coach-"));
+  const text = await readFile(join(paths(home).reflections, logs[0]), "utf8");
+  assert.match(text, /- recs_rejected: 3$/m, `contradicts its own failure line:\n${text}`);
 });
